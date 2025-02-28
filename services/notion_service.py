@@ -140,12 +140,19 @@ def convert_to_notion_blocks(content):
     blocks = []
     
     i = 0
+    current_list_type = None  # 'bulleted' 或 'numbered'
+    list_levels = []  # 保存当前层级的列表项信息
+    
     while i < len(lines):
         line = lines[i].strip()
         
         # 处理标题 (# 标题)
         header_match = re.match(r'^(#{1,3})\s+(.+)$', line)
         if header_match:
+            # 如果之前在处理列表，结束列表
+            current_list_type = None
+            list_levels = []
+            
             level = len(header_match.group(1))
             heading_text = header_match.group(2)
             
@@ -163,41 +170,105 @@ def convert_to_notion_blocks(content):
             i += 1
             continue
         
-        # 处理列表项 (- 项目 或 * 项目)
-        list_match = re.match(r'^[-*]\s+(.+)$', line)
+        # 处理列表项，支持多级列表
+        # 检查列表项的缩进级别
+        list_match = re.match(r'^(\s*)[-*]\s+(.+)$', line)
         if list_match:
-            list_text = list_match.group(1)
+            indent = len(list_match.group(1))
+            list_text = list_match.group(2)
+            
+            # 确定列表级别 (基于缩进)
+            indent_level = indent // 2  # 假设每级缩进为 2 个空格
+            
+            # 更新列表级别信息
+            if current_list_type != 'bulleted' or indent_level != len(list_levels):
+                # 新的列表类型或新的缩进级别
+                current_list_type = 'bulleted'
+                
+                # 调整 list_levels 以匹配当前级别
+                if indent_level > len(list_levels):
+                    # 增加缩进级别
+                    while len(list_levels) < indent_level:
+                        list_levels.append('bulleted')
+                else:
+                    # 减少缩进级别
+                    list_levels = list_levels[:indent_level]
+                list_levels.append('bulleted')
             
             # 分割长列表项
             for chunk in split_text(list_text, MAX_TEXT_LENGTH):
-                blocks.append({
+                # 根据缩进级别创建嵌套结构
+                block = {
                     "object": "block",
                     "bulleted_list_item": {
                         "rich_text": parse_markdown_formatting(chunk)
                     }
-                })
+                }
+                
+                # 处理子项
+                if indent_level > 0:
+                    # 添加缩进信息
+                    block["bulleted_list_item"]["color"] = "default"
+                
+                blocks.append(block)
             i += 1
             continue
         
-        # 处理数字列表项 (1. 项目)
-        num_list_match = re.match(r'^\d+\.\s+(.+)$', line)
+        # 处理数字列表项，支持多级列表
+        num_list_match = re.match(r'^(\s*)(\d+)\.\s+(.+)$', line)
         if num_list_match:
-            list_text = num_list_match.group(1)
+            indent = len(num_list_match.group(1))
+            num = num_list_match.group(2)
+            list_text = num_list_match.group(3)
+            
+            # 确定列表级别 (基于缩进)
+            indent_level = indent // 2  # 假设每级缩进为 2 个空格
+            
+            # 更新列表级别信息
+            if current_list_type != 'numbered' or indent_level != len(list_levels):
+                current_list_type = 'numbered'
+                
+                # 调整 list_levels 以匹配当前级别
+                if indent_level > len(list_levels):
+                    # 增加缩进级别
+                    while len(list_levels) < indent_level:
+                        list_levels.append('numbered')
+                else:
+                    # 减少缩进级别
+                    list_levels = list_levels[:indent_level]
+                list_levels.append('numbered')
             
             # 分割长列表项
             for chunk in split_text(list_text, MAX_TEXT_LENGTH):
-                blocks.append({
+                # 创建编号列表项
+                block = {
                     "object": "block",
                     "numbered_list_item": {
                         "rich_text": parse_markdown_formatting(chunk)
                     }
-                })
+                }
+                
+                # 处理子项
+                if indent_level > 0:
+                    # 添加缩进信息
+                    block["numbered_list_item"]["color"] = "default"
+                
+                blocks.append(block)
             i += 1
             continue
+        
+        # 如果遇到空行或其他非列表项，重置列表状态
+        if not line:
+            current_list_type = None
+            list_levels = []
         
         # 处理引用块 (> 引用)
         quote_match = re.match(r'^>\s+(.+)$', line)
         if quote_match:
+            # 结束之前的列表
+            current_list_type = None
+            list_levels = []
+            
             quote_text = quote_match.group(1)
             
             # 分割长引用
@@ -213,7 +284,11 @@ def convert_to_notion_blocks(content):
         
         # 处理代码块 (```language 代码 ```)
         if line.startswith("```"):
-            code_lang = line[3:].strip()  # 修正拼写错误：trip -> strip
+            # 结束之前的列表
+            current_list_type = None
+            list_levels = []
+            
+            code_lang = line[3:].strip()
             code_content = []
             i += 1
             
@@ -233,8 +308,34 @@ def convert_to_notion_blocks(content):
                 i += 1
                 continue
         
+        # 处理表格行 (| 列 1 | 列 2 | 列 3 |)
+        table_match = re.match(r'^\s*\|(.+)\|\s*$', line)
+        if table_match:
+            # 检测到表格，但 Notion API 当前有一些限制，我们先跳过它
+            # 在未来的版本可以处理表格转换
+            current_list_type = None
+            list_levels = []
+            
+            # 提取表格行的内容
+            cells = [cell.strip() for cell in table_match.group(1).split('|')]
+            
+            # 把表格行转为普通文本
+            table_line = "| " + " | ".join(cells) + " |"
+            blocks.append({
+                "object": "block",
+                "paragraph": {
+                    "rich_text": [{"text": {"content": table_line}}]
+                }
+            })
+            i += 1
+            continue
+        
         # 处理普通段落
         if line:
+            # 结束之前的列表
+            current_list_type = None
+            list_levels = []
+            
             # 分割长段落
             for chunk in split_text(line, MAX_TEXT_LENGTH):
                 blocks.append({
@@ -293,6 +394,7 @@ def parse_markdown_formatting(text):
     - ~~删除线~~
     - `代码`
     - [链接](URL)
+    - [内容](https://notion.so/PAGE_ID) 作为 Notion 页面链接
     
     参数：
     text (str): 包含 Markdown 格式的文本
@@ -315,8 +417,10 @@ def parse_markdown_formatting(text):
     
     # 定义正则表达式模式
     patterns = [
-        # 链接 [text](url)
-        (r'\[(.+?)\]\((.+?)\)', 'link'),
+        # Notion 页面链接 [text](https://notion.so/pageid)
+        (r'\[(.+?)\]\(https://notion\.so/([a-zA-Z0-9]+)\)', 'notion_page'),
+        # 普通链接 [text](url)
+        (r'\[(.+?)\]\((?!https://notion\.so/)(.+?)\)', 'link'),
         # 加粗 **text**
         (r'\*\*(.+?)\*\*', 'bold'),
         # 斜体 *text*
@@ -333,10 +437,13 @@ def parse_markdown_formatting(text):
             start, end = match.span()
             content = match.group(1)  # 格式内的实际文本
             
-            # 链接有特殊处理
+            # 处理不同类型的链接
             if format_type == 'link':
                 url = match.group(2)
                 formats.append((start, end, format_type, content, url))
+            elif format_type == 'notion_page':
+                page_id = match.group(2)
+                formats.append((start, end, format_type, content, page_id))
             else:
                 formats.append((start, end, format_type, content, None))
     
@@ -352,7 +459,7 @@ def parse_markdown_formatting(text):
     last_end = 0
     processed = []  # 用来跟踪已处理的文本范围
     
-    for start, end, format_type, content, url in formats:
+    for start, end, format_type, content, link_data in formats:
         # 检查这个区域是否已被处理
         if any(s <= start < e or s < end <= e for s, e in processed):
             continue
@@ -364,20 +471,34 @@ def parse_markdown_formatting(text):
                 result.append({"text": {"content": plain_text}})
         
         # 添加格式化文本
-        rich_text = {
-            "text": {"content": content}
-        }
-        
-        if format_type == 'link' and url:
-            rich_text["text"]["link"] = {"url": url}
-        
-        # 设置文本的格式注释
-        annotations = {"bold": False, "italic": False, "strikethrough": False, "code": False}
-        if format_type in annotations:
-            annotations[format_type] = True
-        rich_text["annotations"] = annotations
-        
-        result.append(rich_text)
+        if format_type == 'notion_page':
+            # 创建页面引用/提及
+            result.append({
+                "mention": {
+                    "type": "page",
+                    "page": {
+                        "id": link_data
+                    }
+                },
+                "plain_text": content,
+                "href": f"https://notion.so/{link_data}"
+            })
+        else:
+            # 标准文本格式
+            rich_text = {
+                "text": {"content": content}
+            }
+            
+            if format_type == 'link' and url:
+                rich_text["text"]["link"] = {"url": url}
+            
+            # 设置文本的格式注释
+            annotations = {"bold": False, "italic": False, "strikethrough": False, "code": False}
+            if format_type in annotations:
+                annotations[format_type] = True
+            rich_text["annotations"] = annotations
+            
+            result.append(rich_text)
         
         # 更新已处理的范围
         processed.append((start, end))
@@ -504,24 +625,11 @@ def create_weekly_report(title, content):
     str: 创建的页面 URL
     """
     try:
-        # 将内容转换为 Notion block 格式
-        blocks = [
-            {
-                "object": "block",
-                "heading_1": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": "本周摘要"
-                            }
-                        }
-                    ]
-                }
-            }
-        ]
+        # 将内容中的引用格式 [标题](ref:页面 ID) 转换为 Notion 内链
+        processed_content = process_notion_references(content)
         
-        # 添加转换后的内容块
-        blocks.extend(convert_to_notion_blocks(content))
+        # 将内容转换为 Notion block 格式
+        blocks = convert_to_notion_blocks(processed_content)
         
         # 创建页面
         new_page = notion.pages.create(
@@ -554,6 +662,31 @@ def create_weekly_report(title, content):
     except Exception as e:
         logger.error(f"创建周报页面时出错：{e}")
         raise
+
+def process_notion_references(content):
+    """
+    处理文本中的 Notion 引用标记，转换为 Notion 链接格式
+    
+    参数：
+    content (str): 包含 [标题](ref:页面 ID) 格式引用的文本
+    
+    返回：
+    str: 转换后的文本，引用转为 [[页面 ID]] 格式
+    """
+    import re
+    
+    # 查找格式为 [内容标题](ref:页面 ID) 的引用
+    pattern = r'\[(.*?)\]\(ref:([a-zA-Z0-9]+)\)'
+    
+    def replace_ref(match):
+        title = match.group(1)
+        page_id = match.group(2)
+        # 返回 Notion 页面链接格式
+        return f"[{title}](https://notion.so/{page_id})"
+    
+    # 替换所有匹配项
+    processed_text = re.sub(pattern, replace_ref, content)
+    return processed_text
 
 def add_to_todo_database(content, created_at=None):
     """
@@ -609,7 +742,7 @@ def add_to_todo_database(content, created_at=None):
         logger.error(f"创建待办事项时出错：{e}")
         raise
 
-def add_to_papers_database(title, analysis, created_at=None, pdf_url=None):
+def add_to_papers_database(title, analysis, created_at=None, pdf_url=None, metadata=None):
     """
     将论文分析添加到论文数据库
     
@@ -618,6 +751,7 @@ def add_to_papers_database(title, analysis, created_at=None, pdf_url=None):
     analysis (dict): 论文分析结果，包含详细分析和简洁摘要
     created_at (datetime): 创建时间
     pdf_url (str): 原始 PDF URL
+    metadata (dict, optional): 其他元数据，如作者、DOI、发表日期等
     
     返回：
     str: 创建的页面 ID
@@ -639,6 +773,11 @@ def add_to_papers_database(title, analysis, created_at=None, pdf_url=None):
         }
     }
     
+    # 如果有元数据，添加到属性中
+    if metadata:
+        # 处理元数据并添加到相应的字段
+        properties = add_paper_metadata_to_properties(properties, metadata)
+    
     # 如果有 PDF URL，添加到属性中
     if pdf_url:
         properties["URL"] = {
@@ -656,36 +795,27 @@ def add_to_papers_database(title, analysis, created_at=None, pdf_url=None):
     # 准备内容块
     children = []
     
-    # 如果有原始链接，添加到内容中
-    # if pdf_url:
-    #     children.append({
-    #         "object": "block",
-    #         "callout": {
-    #             "rich_text": [{"text": {"content": "此分析基于 PDF 文件，点击上方 URL 可查看原始文件"}}],
-    #             "icon": {"emoji": "📄"}
-    #         }
-    #     })
-    children.append({
-    "object": "block",
-    "callout": {
-        "rich_text": [{"text": {"content": analysis.get('insight', '')[:150]}}],
-        "icon": {"emoji": "💡"}
-    }
-})
-    # 不再添加简洁摘要块，只添加详细分析块
+    # 添加洞察部分
+    if analysis.get('insight'):
+        children.append({
+            "object": "block",
+            "callout": {
+                "rich_text": [{"text": {"content": analysis.get('insight', '')[:150]}}],
+                "icon": {"emoji": "💡"}
+            }
+        })
+    
+    # 添加详细分析块
     if analysis.get('details'):
-        # children.append({
-        #     "object": "block",
-        #     "heading_1": {
-        #         "rich_text": [{"text": {"content": "详细分析"}}]
-        #     }
-        # })
-        
-        # 使用 convert_to_notion_blocks 转换详细分析
+        # 转换详细分析为 Notion 块格式
         details_blocks = convert_to_notion_blocks(analysis.get('details', ''))
         children.extend(details_blocks)
     
     try:
+        # 首先确保数据库有需要的属性
+        ensure_papers_database_properties()
+        
+        # 创建页面
         new_page = notion.pages.create(
             parent={"database_id": NOTION_PAPERS_DATABASE_ID},
             properties=properties,
@@ -697,6 +827,114 @@ def add_to_papers_database(title, analysis, created_at=None, pdf_url=None):
     except Exception as e:
         logger.error(f"创建论文分析时出错：{e}")
         raise
+
+def add_paper_metadata_to_properties(properties, metadata):
+    """
+    将论文元数据添加到 Notion 属性中
+    
+    参数：
+    properties (dict): 现有属性字典
+    metadata (dict): 元数据字典
+    
+    返回：
+    dict: 更新后的属性字典
+    """
+    # 添加作者（多选文本）
+    if metadata.get('authors'):
+        authors = metadata['authors']
+        if isinstance(authors, list) or authors:
+            # 转为逗号分隔的字符串
+            author_text = ", ".join(authors)
+            properties["Authors"] = {
+                "rich_text": [{"text": {"content": author_text[:2000]}}]  # Notion API 限制
+            }
+    
+    # 添加期刊/出版物（文本）
+    if metadata.get('publication'):
+        properties["Publication"] = {
+            "rich_text": [{"text": {"content": metadata['publication'][:2000]}}]
+        }
+    
+    # 添加发布日期
+    if metadata.get('date'):
+        try:
+            # 尝试解析日期字符串
+            from dateutil.parser import parse
+            date_obj = parse(metadata['date'])
+            properties["PublishDate"] = {
+                "date": {"start": date_obj.strftime('%Y-%m-%d')}
+            }
+        except:
+            # 如果无法解析，使用原始字符串
+            properties["PublishYear"] = {
+                "rich_text": [{"text": {"content": metadata['date'][:100]}}]
+            }
+    
+    # 添加 DOI
+    if metadata.get('doi'):
+        properties["DOI"] = {
+            "rich_text": [{"text": {"content": metadata['doi'][:100]}}]
+        }
+    
+    # 添加 Zotero 链接
+    if metadata.get('zotero_link'):
+        properties["ZoteroLink"] = {
+            "url": metadata['zotero_link']
+        }
+    
+    # 添加标签（多选）
+    if metadata.get('tags') and isinstance(metadata['tags'], list):
+        multi_select_tags = []
+        for tag in metadata['tags'][:10]:  # 限制数量
+            multi_select_tags.append({"name": tag[:100]})  # 限制长度
+        
+        if multi_select_tags:
+            properties["Tags"] = {
+                "multi_select": multi_select_tags
+            }
+    
+    return properties
+
+def ensure_papers_database_properties():
+    """
+    确保论文数据库拥有所需的所有属性/字段
+    第一次使用时会初始化数据库结构
+    """
+    try:
+        # 获取当前数据库结构
+        db_info = notion.databases.retrieve(database_id=NOTION_PAPERS_DATABASE_ID)
+        existing_properties = db_info.get('properties', {})
+        
+        # 检查并添加缺失的属性
+        required_properties = {
+            "Abstract": {"rich_text": {}},
+            "Authors": {"rich_text": {}},
+            "Publication": {"rich_text": {}},
+            "PublishDate": {"date": {}},
+            "PublishYear": {"rich_text": {}},  # 备用字段，当无法解析日期时使用
+            "DOI": {"rich_text": {}},
+            "Tags": {"multi_select": {}},
+            "ZoteroLink": {"url": {}},
+            "URL": {"url": {}}
+        }
+        
+        missing_properties = {}
+        for prop_name, prop_config in required_properties.items():
+            if prop_name not in existing_properties:
+                missing_properties[prop_name] = prop_config
+        
+        # 如果有缺失的属性，更新数据库结构
+        if missing_properties:
+            logger.info(f"正在添加缺失的论文数据库属性：{', '.join(missing_properties.keys())}")
+            notion.databases.update(
+                database_id=NOTION_PAPERS_DATABASE_ID,
+                properties=missing_properties
+            )
+            logger.info("数据库结构已更新")
+    
+    except Exception as e:
+        logger.warning(f"检查/更新数据库结构时出错：{e}")
+        # 继续执行，因为这不是致命错误
 
 def is_pdf_url(url):
     """

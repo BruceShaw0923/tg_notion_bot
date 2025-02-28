@@ -5,6 +5,12 @@ import re
 import os
 from config import GEMINI_API_KEY, PREDEFINED_TAG_CATEGORIES
 from utils.helpers import extract_tags_from_categories
+from config.prompts import (
+    CONTENT_ANALYSIS_PROMPT,
+    PDF_ANALYSIS_PROMPT,
+    PDF_TEXT_ANALYSIS_PROMPT,
+    WEEKLY_SUMMARY_PROMPT
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,27 +38,11 @@ def analyze_content(content):
         return {"title": "", "summary": "", "tags": []}
     
     try:
-        # 添加预定义标签类别指导
-        prompt = f"""
-        分析以下内容，并提供：
-        1. 标题 (title)：提取或总结内容的标题（30 字以内）
-        1. 简短摘要 (不超过 150 字)
-        2. 最多 5 个相关标签
-        
-        标签要求：
-        - 必须从以下预定义类别中选择 1-3 个：{", ".join(PREDEFINED_TAG_CATEGORIES)}
-        - 然后添加 2-3 个更具体的相关标签
-        
-        内容：
-        {content[:4000]}
-        
-        请以 JSON 格式返回：
-        {{
-            "title": "标题内容",
-            "summary": "摘要内容",
-            "tags": ["标签 1", "标签 2", "标签 3", "标签 4", "标签 5"]
-        }}
-        """
+        # 使用配置文件中的提示模板，注入预定义标签类别和内容
+        prompt = CONTENT_ANALYSIS_PROMPT.format(
+            categories=", ".join(PREDEFINED_TAG_CATEGORIES),
+            content=content[:4000]  # 限制内容长度
+        )
         
         response = model.generate_content(prompt)
         
@@ -68,7 +58,7 @@ def analyze_content(content):
                 # 确保 tags 是列表
                 if not isinstance(result.get("tags", []), list):
                     result["tags"] = []
-                                # 确保有标题字段
+                # 确保有标题字段
                 if "title" not in result:
                     result["title"] = ""
                 return result
@@ -129,7 +119,7 @@ def analyze_pdf_content(pdf_path, url=None):
     try:
         # 检查文件大小 - Gemini 有输入限制
         file_size = os.path.getsize(pdf_path)
-        if file_size > 20 * 1024 * 1024:  # 20MB
+        if (file_size > 20 * 1024 * 1024):  # 20MB
             logger.warning(f"PDF 文件过大 ({file_size / (1024*1024):.2f}MB)，超过 Gemini 处理限制")
             return None
             
@@ -140,52 +130,7 @@ def analyze_pdf_content(pdf_path, url=None):
 
             # 创建上下文提示
             url_context = f"该 PDF 文件来源：{url}" if url else "请分析以下 PDF 文件"
-            prompt = f"""
-            {url_context}
-            请分析这个 PDF 文件，我需要以下信息：
-            1. 标题 (title)：提取或总结论文的标题
-            2. 简要摘要 (brief_summary)：用简短的几句话概述文档的核心内容 (不超过 200 字)
-            3. 详细分析 (details)：提供更深入的文档内容分析，包括：
-                # 1.核心问题
-                [待填充] 用一句话概括研究目标
-                ## 现有方法不足： 
-                    - [列出 3 点]
-
-                # 2.方法论
-                创新点流程图图解：（▢→▢→▢）
-                ## 关键技术： 
-                    - [分点说明]
-                ## 理论支撑： 
-                    - [定理名称]+[核心公式]
-
-                # 3.实验验证
-                ## 数据集特征： 
-                    - [数据量，领域差异]
-                ## 指标对比： 
-                    - [表格形式呈现 FPR@95 等]
-                ## 消融实验： 
-                    - [关键参数影响曲线]
-
-                # 4.启示与局限
-                ## 可复现性： 
-                    - [代码/数据开放情况]
-                ## 应用价值： 
-                    - [实际部署可能性]
-                ## 改进方向： 
-                    - [作者讨论的未来工作]
-                ## 创新点
-                    - [客观评价作者最具创新的工作，以及向外拓展的启发]
-            4. 有关这篇文章，高屋建瓴的见解和评价
-            
-            请使用 Markdown 格式，确保正确使用以下语法：
-                - 使用 # 表示一级标题，## 表示二级标题 ### 表示三级标题
-                - 使用 **文本** 表示加粗文本
-                - 使用 *文本* 表示斜体文本
-                - 使用 - 表示列表项
-                - 使用 > 表示引用
-                - 使用 [文本](链接) 表示超链接
-            以结构化 JSON 格式回复，包含四个字段：title, brief_summary, details, insight
-            """
+            prompt = PDF_ANALYSIS_PROMPT.format(url_context=url_context)
             
             # 创建包含 PDF 的请求
             image_parts = [
@@ -202,34 +147,35 @@ def analyze_pdf_content(pdf_path, url=None):
             # 处理响应文本，尝试提取 JSON
             response_text = response.text
             logger.info("收到 Gemini 响应，正在处理...")
+            logger.debug(f"原始响应：{response_text[:500]}...")  # 记录响应的前 500 个字符用于调试
+            
+            # 清理格式
+            response_text = response_text.replace('\\n', '\n').replace('\\', '')
             
             # 尝试提取 JSON 格式的内容
             json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group(1)
-                result = json.loads(json_str)
+                try:
+                    result = json.loads(json_str)
+                except Exception as json_err:
+                    logger.warning(f"JSON 块解析失败：{json_err}")
+                    result = safe_extract_fields(response_text)
             else:
                 # 尝试直接解析整个文本为 JSON
                 try:
-                    result = json.loads(response_text)
+                    # 寻找可能的 JSON 部分
+                    json_start = response_text.find('{')
+                    json_end = response_text.rfind('}') + 1
+                    if json_start >= 0 and json_end > json_start:
+                        json_str = response_text[json_start:json_end]
+                        result = json.loads(json_str)
+                    else:
+                        # 如果找不到完整的 JSON，使用正则表达式提取字段
+                        result = safe_extract_fields(response_text)
                 except json.JSONDecodeError:
-                    # 使用文本处理方式
-                    title_match = re.search(r'(?:标题|title)[：:]\s*(.*?)(?:\n|$)', response_text, re.IGNORECASE)
-                    title = title_match.group(1).strip() if title_match else ""
-                    
-                    summary_match = re.search(r'(?:简要摘要|brief_summary)[：:]\s*(.*?)(?:\n\n|\n(?=\d\.)|$)', response_text, re.DOTALL | re.IGNORECASE)
-                    brief_summary = summary_match.group(1).strip() if summary_match else ""
-                    insight_match = re.search(r'(?:见解与评价|insight)[：:]\s*(.*?)(?:\n\n\d\.|\Z)', response_text, re.DOTALL | re.IGNORECASE)
-                    
-                    details_match = re.search(r'(?:详细分析|details)[：:]\s*(.*?)(?:\n\n\d\.|\Z)', response_text, re.DOTALL | re.IGNORECASE)
-                    details = details_match.group(1).strip() if details_match else response_text
-                    
-                    result = {
-                        "title": title,
-                        "brief_summary": brief_summary,
-                        "details": details,
-                        "insight": insight 
-                    }
+                    # 使用字段提取方法
+                    result = safe_extract_fields(response_text)
             
             # 确保有必要的字段
             required_fields = ["title", "brief_summary", "details", "insight"]
@@ -240,18 +186,75 @@ def analyze_pdf_content(pdf_path, url=None):
             return result
             
         except Exception as e:
-            logger.error(f"使用 Gemini Vision API 分析 PDF 时出错：{e}")
+            logger.error(f"使用 Gemini Vision API 分析 PDF {pdf_path} 时出错：{str(e)}")
+            logger.debug(f"异常类型：{type(e).__name__}")
+            logger.debug(f"异常详情：{e}")
             
             # 如果 Vision API 失败，尝试基于文本的方法
             return extract_and_analyze_pdf_text(pdf_path)
     
     except Exception as e:
-        logger.error(f"分析 PDF 内容时出错：{e}")
+        logger.error(f"分析 PDF {pdf_path} 内容时出错：{str(e)}")
         return {
             "title": "PDF 分析失败",
             "brief_summary": "无法解析 PDF 内容",
-            "details": f"处理过程中出错：{str(e)}"
+            "details": f"处理过程中出错：{str(e)}",
+            "insight": "处理失败"
         }
+
+def safe_extract_fields(text):
+    """
+    从文本中安全提取字段，处理非 JSON 格式的响应
+    
+    参数：
+    text (str): 响应文本
+    
+    返回：
+    dict: 提取的字段
+    """
+    result = {}
+    
+    # 使用更健壮的正则表达式提取字段
+    title_pattern = r'(?:标题|title)[：:]\s*(.*?)(?:\n|$)'
+    summary_pattern = r'(?:简要摘要|摘要|brief_?summary)[：:]\s*(.*?)(?:\n\n|\n(?=[A-Z#])|$)'
+    insight_pattern = r'(?:见解|评价|洞察|insight)[：:]\s*(.*?)(?:\n\n|\n(?=[A-Z#])|$)'
+    details_pattern = r'(?:详细分析|详情|details)[：:]\s*(.*?)(?:\n\n(?=[A-Z#])|$)'
+    
+    # 尝试匹配
+    title_match = re.search(title_pattern, text, re.IGNORECASE | re.DOTALL)
+    if title_match:
+        result["title"] = title_match.group(1).strip()
+    
+    summary_match = re.search(summary_pattern, text, re.IGNORECASE | re.DOTALL)
+    if summary_match:
+        result["brief_summary"] = summary_match.group(1).strip()
+    
+    insight_match = re.search(insight_pattern, text, re.IGNORECASE | re.DOTALL)
+    if insight_match:
+        result["insight"] = insight_match.group(1).strip()
+    
+    details_match = re.search(details_pattern, text, re.IGNORECASE | re.DOTALL)
+    if details_match:
+        result["details"] = details_match.group(1).strip()
+    
+    # 如果没有找到详情字段，使用整个响应
+    if "details" not in result or not result["details"]:
+        result["details"] = text
+    
+    # 如果没有找到标题，使用默认标题
+    if "title" not in result or not result["title"]:
+        result["title"] = "PDF 分析结果"
+    
+    # 如果没有找到摘要，尝试使用前几行作为摘要
+    if "brief_summary" not in result or not result["brief_summary"]:
+        first_lines = " ".join(text.split("\n")[:3])
+        result["brief_summary"] = first_lines[:300]
+    
+    # 如果没有找到洞察，提供默认值
+    if "insight" not in result or not result["insight"]:
+        result["insight"] = "无法提取关键洞察"
+    
+    return result
 
 def extract_and_analyze_pdf_text(pdf_path):
     """
@@ -274,91 +277,65 @@ def extract_and_analyze_pdf_text(pdf_path):
         max_pages = min(20, len(reader.pages))
         
         for i in range(max_pages):
-            text += reader.pages[i].extract_text() + "\n"
+            page_text = reader.pages[i].extract_text() 
+            if page_text:  # 确保页面包含文本
+                text += page_text + "\n\n"
+        
+        if not text.strip():
+            logger.warning("PDF 未提取到文本，可能是扫描版或加密文件")
+            return {
+                "title": os.path.basename(pdf_path),
+                "brief_summary": "无法提取文本内容，可能是扫描版 PDF 或加密文件",
+                "details": "此 PDF 没有可提取的文本层",
+                "insight": "无法分析"
+            }
         
         # 限制文本长度
         text = text[:15000] + ("..." if len(text) > 15000 else "")
         
         # 使用文本模型生成分析
-        prompt = f"""
-        1. 标题 (title)：提取或总结论文的标题
-        2. 简要摘要 (brief_summary)：用简短的几句话概述文档的核心内容 (不超过 200 字)，这个摘要会显示在数据库条目的 Abstract 字段中，应该是清晰简洁的概述。
-        3. 详细分析 (details)：提供更深入的文档内容分析，包括：
-                # 1.核心问题
-                [待填充] 用一句话概括研究目标
-                ## 现有方法不足： 
-                    - [列出 3 点]
-
-                # 2.方法论
-                创新点流程图图解：（▢→▢→▢）
-                ## 关键技术： 
-                    - [分点说明]
-                ## 理论支撑： 
-                    - [定理名称]+[核心公式]
-
-                # 3.实验验证
-                ## 数据集特征： 
-                    - [数据量，领域差异]
-                ## 指标对比： 
-                    - [表格形式呈现 FPR@95 等]
-                ## 消融实验： 
-                    - [关键参数影响曲线]
-
-                # 4.启示与局限
-                ## 可复现性： 
-                    - [代码/数据开放情况]
-                ## 应用价值： 
-                    - [实际部署可能性]
-                ## 改进方向： 
-                    - [作者讨论的未来工作]
-                ## 创新点
-                    - [客观评价作者最具创新的工作，以及向外拓展的启发]
-        4. 有关这篇文章，高屋建瓴的见解和评价
-        论文内容：
-        {text}
-        
-        JSON 格式返回：
-        {{
-          "title": "论文标题",
-          "brief_summary": "简要摘要...",
-          "details": "# 1.核心问题\\n...(Markdown 格式详细内容)",
-          "insight": "高屋建瓴的见解..."
-
-        }}
-        
-        请使用 Markdown 格式，确保正确使用以下语法，不要将 markdown 代码放入代码块中：
-        - 使用 # 表示一级标题，## 表示二级标题 ### 表示三级标题
-        - 使用 **文本** 表示加粗文本
-        - 使用 *文本* 表示斜体文本
-        - 使用 - 表示列表项
-        - 使用 > 表示引用
-        - 使用 [文本](链接) 表示超链接
-        """
+        prompt = PDF_TEXT_ANALYSIS_PROMPT.format(text=text)
         
         response = model.generate_content(prompt)
+        response_text = response.text
         
-        # 解析 JSON 响应
-        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-        if json_match:
-            try:
+        try:
+            # 尝试解析为 JSON
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
                 result = json.loads(json_match.group(0))
-                return result
-            except json.JSONDecodeError:
-                pass
-        
-        # 如果 JSON 解析失败，返回简单格式
-        return {
-            "title": "PDF 文本解析",
-            "brief_summary": response.text[:200] + "...",
-            "details": response.text,
-            "insight": "见解"
-        }
+            else:
+                # 如果找不到 JSON，使用安全提取方法
+                result = safe_extract_fields(response_text)
+                
+            # 确保有所有必要字段
+            required_fields = ["title", "brief_summary", "details", "insight"]
+            for field in required_fields:
+                if field not in result:
+                    result[field] = ""
+                    
+            return result
+        except Exception as json_err:
+            logger.error(f"解析模型响应时出错：{json_err}")
+            return safe_extract_fields(response_text)
+            
     except Exception as e:
-        logger.error(f"提取和分析 PDF 文本时出错：{e}")
+        # 更详细的错误日志，包括异常类型
+        logger.error(f"提取和分析 PDF 文本时出错：{str(e)}")
+        logger.debug(f"异常类型：{type(e).__name__}")
+        
+        # 尝试获取文件名作为标题
+        try:
+            filename = os.path.basename(pdf_path)
+            title = os.path.splitext(filename)[0]
+        except:
+            title = "PDF 文档"
+            
         return {
-            "title": "PDF 文本提取失败",
+            "title": title,
             "brief_summary": "无法提取或解析 PDF 文本",
-            "details": f"出错：{str(e)}"
+            "details": f"在处理此 PDF 时发生错误：{type(e).__name__} - {str(e)}",
+            "insight": "处理失败"
         }
 
 def generate_weekly_summary(entries):
@@ -375,13 +352,14 @@ def generate_weekly_summary(entries):
         return "本周没有记录任何内容。"
     
     try:
-        # 提取每个条目的标题、摘要和标签
+        # 提取每个条目的标题、摘要、标签和页面 ID
         entries_data = []
         for entry in entries:
             title = ""
             summary = ""
             tags = []
             url = ""
+            page_id = entry.get("id", "").replace("-", "")  # 获取并格式化页面 ID
             
             props = entry.get("properties", {})
             
@@ -405,42 +383,14 @@ def generate_weekly_summary(entries):
                 "title": title,
                 "summary": summary,
                 "tags": tags,
-                "url": url
+                "url": url,
+                "page_id": page_id  # 添加页面 ID 以支持内链
             })
         
-        # 构建提示，明确指示返回 Markdown 格式
-        prompt = f"""
-        根据以下本周收集的内容，生成一份简洁的周报摘要。
-        分析这些内容的主题和趋势，突出重要的发现和见解。
-        
-        本周内容：
-        {json.dumps(entries_data, ensure_ascii=False)}
-        
-        请生成一份结构化的周报，包含：
-        1. 总体主题和趋势概述
-        2. 按类别分组的关键内容
-        3. 值得关注的亮点
-        
-        请使用 Markdown 格式，确保正确使用以下语法：
-        - 使用 # 表示一级标题，## 表示二级标题
-        - 使用 **文本** 表示加粗文本
-        - 使用 *文本* 表示斜体文本
-        - 使用 - 表示列表项
-        - 使用 > 表示引用
-        - 使用 [文本](链接) 表示超链接
-        
-        示例格式：
-        # 本周摘要
-        
-        **总体趋势**
-        本周主要关注了**三个领域**：技术、商业和文化。
-        
-        ## 技术动态
-        - **人工智能**: 最新研究表明...
-        - **区块链**: 新的应用场景包括...
-        
-        请生成类似上述格式的 Markdown 文本，确保标题层级清晰，重点内容加粗显示。不需要将 markdown 代码放入代码块中。
-        """
+        # 使用配置的周报生成提示模板
+        prompt = WEEKLY_SUMMARY_PROMPT.format(
+            entries_json=json.dumps(entries_data, ensure_ascii=False)
+        )
         
         response = model.generate_content(prompt, stream=False)
         

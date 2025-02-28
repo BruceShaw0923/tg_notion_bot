@@ -1,3 +1,5 @@
+"""配置模块"""
+
 import os
 from typing import List
 from dotenv import load_dotenv
@@ -19,6 +21,11 @@ NOTION_TODO_DATABASE_ID = os.getenv("NOTION_TODO_DATABASE_ID", "")
 # Gemini API 配置
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
+# Zotero 配置
+ZOTERO_API_KEY = os.getenv("ZOTERO_API_KEY", "")
+ZOTERO_USER_ID = os.getenv("ZOTERO_USER_ID", "")
+ZOTERO_FOLDER_ID = os.getenv("ZOTERO_FOLDER_ID", "")  # 默认文件夹 ID
+
 # 周报配置
 WEEKLY_REPORT_DAY = os.getenv("WEEKLY_REPORT_DAY", "Sunday")
 WEEKLY_REPORT_HOUR = int(os.getenv("WEEKLY_REPORT_HOUR", "20"))
@@ -38,6 +45,10 @@ if not NOTION_TOKEN or not NOTION_DATABASE_ID:
 
 if not GEMINI_API_KEY:
     logging.error("错误：GEMINI_API_KEY 未设置")
+
+# 检查 Zotero 配置
+if not ZOTERO_API_KEY or not ZOTERO_USER_ID:
+    logging.warning("警告：ZOTERO_API_KEY 或 ZOTERO_USER_ID 未设置，Zotero 功能将不可用")
 
 # OpenAI API 配置 (如果使用)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

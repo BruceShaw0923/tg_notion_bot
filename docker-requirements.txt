@@ -13,3 +13,4 @@ pypdf>=3.0.0
 openai>=0.27.0
 # pymupdf>=1.18.0  # 添加 PyMuPDF 用于 PDF 处理
 # 其他项目依赖...
+pyzotero>=1.5.5  # 可选，如果需要更多 Zotero API 功能

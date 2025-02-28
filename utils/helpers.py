@@ -1,19 +1,44 @@
 import re
-from datetime import datetime
-import logging
-import requests
 import os
+import tempfile
+import requests
+import logging
+from urllib.parse import urlparse
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+def truncate_text(text, max_length=100):
+    """截断文本至指定长度"""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length-3] + "..."
+
 def extract_url_from_text(text):
-    """从文本中提取 URL"""
+    """从文本中提取第一个 URL（旧函数保留向后兼容）"""
     if not text:
-        return ""
+        return None
     
-    url_pattern = re.compile(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
-    urls = re.findall(url_pattern, text)
-    return urls[0] if urls else ""
+    url_pattern = r'https?://\S+'
+    match = re.search(url_pattern, text)
+    if match:
+        return match.group()
+    return None
+
+def extract_all_urls_from_text(text):
+    """从文本中提取所有 URL
+    
+    参数：
+    text (str): 输入文本
+    
+    返回：
+    list: URL 列表
+    """
+    if not text:
+        return []
+    
+    url_pattern = r'https?://[^\s<>"\']+'
+    return re.findall(url_pattern, text)
 
 def format_datetime(dt):
     """格式化日期时间"""
@@ -21,87 +46,72 @@ def format_datetime(dt):
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     return str(dt)
 
-def truncate_text(text, max_length=2000):
-    """
-    截断文本，确保不超过指定长度
-    
-    参数：
-    text (str): 要截断的文本
-    max_length (int): 最大允许长度
-    
-    返回：
-    str: 截断后的文本
-    """
-    if not text:
-        return ""
-    
-    if len(text) <= max_length:
-        return text
-    
-    # 尽量在句子结束处截断
-    cutoff = max_length - 3  # 为 "..." 保留空间
-    punctuation_positions = [
-        text.rfind(". ", 0, cutoff),
-        text.rfind("? ", 0, cutoff),
-        text.rfind("! ", 0, cutoff),
-        text.rfind("\n", 0, cutoff)
-    ]
-    
-    best_position = max(punctuation_positions)
-    
-    # 如果没有找到好的断点，就在单词边界处截断
-    if best_position == -1:
-        best_position = text.rfind(" ", 0, cutoff)
-    
-    # 如果仍然没有找到，就直接在指定位置截断
-    if best_position == -1:
-        return text[:cutoff] + "..."
-    
-    return text[:best_position+1] + "..."
-
 def is_url_only(text):
     """检查文本是否只包含 URL"""
     if not text:
         return False
     
-    # 去除空白字符
-    text = text.strip()
+    # 清理文本中的空白字符
+    cleaned_text = text.strip()
     
-    # 使用正则表达式检查是否为纯 URL
-    url_pattern = re.compile(r'^http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+$')
-    return bool(url_pattern.match(text))
+    # 检查是否只有一个 URL
+    urls = extract_all_urls_from_text(cleaned_text)
+    if len(urls) == 1 and urls[0].strip() == cleaned_text:
+        return True
+    
+    return False
 
-def download_file(url, local_path=None):
-    """
-    下载文件到本地
+def download_file(url, file_extension=None):
+    """从 URL 下载文件到临时位置
     
     参数：
     url (str): 文件 URL
-    local_path (str, optional): 保存路径，如果不提供则返回文件内容
+    file_extension (str, optional): 文件扩展名，如'.pdf'
     
     返回：
-    bytes 或 str: 如果提供 local_path 则返回保存路径，否则返回文件内容
+    tuple: (本地文件路径，文件大小) 或 (None, 0)
     """
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        response = requests.get(url, headers=headers, stream=True)
-        response.raise_for_status()
-        
-        if local_path:
-            os.makedirs(os.path.dirname(os.path.abspath(local_path)), exist_ok=True)
-            with open(local_path, 'wb') as file:
+        response = requests.get(url, stream=True, timeout=30)
+        if response.status_code == 200:
+            # 获取文件大小
+            file_size = int(response.headers.get('content-length', 0))
+            
+            # 确定文件扩展名
+            if not file_extension:
+                # 尝试从 URL 中获取扩展名
+                parsed_url = urlparse(url)
+                path = parsed_url.path
+                ext = os.path.splitext(path)[1]
+                if ext:
+                    file_extension = ext
+                else:
+                    # 尝试从 Content-Type 获取扩展名
+                    content_type = response.headers.get('content-type', '')
+                    if 'pdf' in content_type:
+                        file_extension = '.pdf'
+                    elif 'image' in content_type:
+                        file_extension = '.jpg'  # 默认图片扩展名
+                    else:
+                        file_extension = ''
+            
+            # 创建临时文件
+            fd, temp_path = tempfile.mkstemp(suffix=file_extension)
+            os.close(fd)
+            
+            # 写入文件内容
+            with open(temp_path, 'wb') as file:
                 for chunk in response.iter_content(chunk_size=8192):
                     file.write(chunk)
-            return local_path
+                    
+            logger.info(f"文件已下载到：{temp_path}")
+            return temp_path, file_size
         else:
-            return response.content
-    
+            logger.error(f"下载失败，状态码：{response.status_code}")
+            return None, 0
     except Exception as e:
         logger.error(f"下载文件时出错：{e}")
-        raise
+        return None, 0
 
 def format_notion_text(text, formatting=None):
     """

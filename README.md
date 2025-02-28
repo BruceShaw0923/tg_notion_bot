@@ -59,7 +59,6 @@ WEEKLY_REPORT_HOUR=20
 chmod +x docker-compose-run.sh./docker-compose-run.sh
 ```
 
-
 或手动使用 Docker Compose:
 
 ```
@@ -155,6 +154,25 @@ python test.py
 2. 创建功能分支
 3. 提交更改
 4. 创建 Pull Request
+
+## 项目进度追踪
+
+### 优化
+
+- [X] 周报prompt的优化
+- [X] 带有多个链接的文本解析优化
+- [X] 多级列表的生成和解析为notion block
+
+新增
+
+- [ ] 图片插入
+- [ ] 标签识别，并放入Tags属性
+- [ ] epub/书籍通过标签建立图书馆
+- [X] 周报建立notion内链
+- [X] 把各种prompt放到配置文件里
+- [ ] 把微信消息推送至bot
+- [X] 把zotero的文件直接推送到bot
+- [ ] 部署到Azure
 
 ## 许可证
 
