@@ -1,0 +1,14 @@
+version: '3'
+
+services:
+  tg_notion_bot:
+    build: .
+    container_name: tg_notion_bot
+    restart: always
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env
+    environment:
+      - TZ=Asia/Shanghai
+    command: python main.py
+

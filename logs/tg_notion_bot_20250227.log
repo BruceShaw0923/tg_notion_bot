@@ -1,0 +1,14 @@
+/Users/wangruochen/1-Tools/tg_notion_bot/venv/lib/python3.12/site-packages/telegram/utils/request.py:49: UserWarning: python-telegram-bot is using upstream urllib3. This is allowed but not supported by python-telegram-bot maintainers.
+  warnings.warn(
+2025-02-27 00:38:51,579 - __main__ - INFO - 启动 TG-Notion 自动化机器人
+2025-02-27 00:38:51,579 - __main__ - INFO - 已安排周报生成任务：每Sunday晚20:00
+2025-02-27 00:38:51,579 - apscheduler.scheduler - INFO - Scheduler started
+2025-02-27 00:38:53,558 - __main__ - INFO - 机器人已启动，正在监听消息
+2025-02-27 00:38:55,830 - services.weekly_report - INFO - 开始生成每周报告
+2025-02-27 00:38:57,836 - httpx - INFO - HTTP Request: POST https://api.notion.com/v1/databases/1a03cf0726b180e1814ed8d611ad34b0/query "HTTP/1.1 200 OK"
+2025-02-27 00:38:57,842 - services.weekly_report - INFO - 获取到 11 个条目
+2025-02-27 00:39:04,820 - services.weekly_report - INFO - 成功生成周报内容
+2025-02-27 00:39:06,503 - httpx - INFO - HTTP Request: POST https://api.notion.com/v1/pages "HTTP/1.1 200 OK"
+2025-02-27 00:39:06,505 - services.weekly_report - INFO - 成功创建周报：https://notion.so/1a63cf0726b18108adacd8a0c9cd826e
+2025-02-27 00:40:38,475 - telegram.ext.updater - INFO - Received signal 2 (SIGINT), stopping...
+2025-02-27 00:40:38,478 - apscheduler.scheduler - INFO - Scheduler has been shut down
