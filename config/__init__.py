@@ -36,6 +36,9 @@ PREDEFINED_TAG_CATEGORIES = [
     "technology", "math", "management"
 ]
 
+# 功能开关
+ENABLE_GEMINI = os.getenv("ENABLE_GEMINI", "True").lower() == "true"
+
 # 检查必要的配置
 if not TELEGRAM_BOT_TOKEN:
     logging.error("错误：TELEGRAM_BOT_TOKEN 未设置")

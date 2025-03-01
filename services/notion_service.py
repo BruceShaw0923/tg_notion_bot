@@ -359,7 +359,7 @@ def convert_to_notion_blocks(content):
 
 def limit_blocks(blocks, max_blocks=100):
     """
-    限制 Notion 块的数量，确保不超过 API 限制
+    限制 Notion 块的数量和内容长度，确保不超过 API 限制
     
     参数：
     blocks (list): Notion 块列表
@@ -368,20 +368,140 @@ def limit_blocks(blocks, max_blocks=100):
     返回：
     list: 限制后的块列表
     """
-    if len(blocks) <= max_blocks:
-        return blocks
+    if not blocks:
+        return []
+        
+    MAX_TEXT_LENGTH = 2000  # Notion API 文本长度限制
+    limited_blocks = []
+    blocks_processed = 0
     
-    # 如果超出限制，保留前 (max_blocks-1) 个块，并添加一个说明块
-    limited_blocks = blocks[:max_blocks-1]
-    limited_blocks.append({
-        "object": "block",
-        "callout": {
-            "rich_text": [{"text": {"content": "内容过长，已截断显示。完整内容请参考原始文档。"}}],
-            "icon": {"emoji": "⚠️"}
-        }
-    })
+    # 留出一个位置给可能的截断提示块
+    actual_max_blocks = max_blocks - 1
     
-    logger.warning(f"内容块数量 ({len(blocks)}) 超出 Notion API 限制，已截断至 {max_blocks} 个块")
+    # 处理所有块，确保每个块的内容不超过限制
+    for block in blocks:
+        # 如果已经处理了最大数量的块，直接退出循环
+        if len(limited_blocks) >= actual_max_blocks:
+            logger.warning(f"达到最大块限制 ({actual_max_blocks})，停止处理其余 {len(blocks) - blocks_processed} 个块")
+            break
+            
+        blocks_processed += 1
+        block_type = block.get("object", "block")
+        
+        # 处理不同类型的块
+        if block_type == "block":
+            # 获取块类型（paragraph, heading_x, code 等）
+            content_type = list(block.keys())[0] if block else None
+            if not content_type or content_type == "object":
+                content_type = list(block.keys())[1] if len(block.keys()) > 1 else None
+            
+            if content_type:
+                # 处理代码块（特别需要注意，因为它们通常包含较长文本）
+                if content_type == "code" and "rich_text" in block["code"]:
+                    code_content = ""
+                    if block["code"]["rich_text"] and "text" in block["code"]["rich_text"][0]:
+                        code_content = block["code"]["rich_text"][0]["text"].get("content", "")
+                    
+                    # 如果代码内容超出限制，分割成多个代码块
+                    if len(code_content) > MAX_TEXT_LENGTH:
+                        language = block["code"].get("language", "plain text")
+                        # 分割代码内容
+                        code_chunks = []
+                        for i in range(0, len(code_content), MAX_TEXT_LENGTH):
+                            chunk = code_content[i:i+MAX_TEXT_LENGTH]
+                            code_chunks.append({
+                                "object": "block",
+                                "code": {
+                                    "language": language,
+                                    "rich_text": [{"text": {"content": chunk}}]
+                                }
+                            })
+                        
+                        # 确保添加的代码块不会超过限制
+                        remaining_slots = actual_max_blocks - len(limited_blocks)
+                        if len(code_chunks) > remaining_slots:
+                            limited_blocks.extend(code_chunks[:remaining_slots])
+                            logger.warning(f"代码块过长，只保留了前 {remaining_slots} 个代码块")
+                            break  # 退出循环，添加截断提示
+                        else:
+                            limited_blocks.extend(code_chunks)
+                    else:
+                        limited_blocks.append(block)
+                
+                # 处理段落、标题和其他文本块
+                elif content_type in ["paragraph", "heading_1", "heading_2", "heading_3", 
+                                    "bulleted_list_item", "numbered_list_item", "quote", "callout"]:
+                    rich_text_key = content_type
+                    if rich_text_key in block and "rich_text" in block[rich_text_key]:
+                        rich_texts = block[rich_text_key]["rich_text"]
+                        
+                        # 计算总文本长度
+                        total_length = sum(len(rt.get("text", {}).get("content", "")) for rt in rich_texts if "text" in rt)
+                        
+                        if total_length > MAX_TEXT_LENGTH:
+                            # 如果总长度超出限制，创建新的简化文本块
+                            combined_text = "".join(rt.get("text", {}).get("content", "") for rt in rich_texts if "text" in rt)
+                            text_chunks = []
+                            
+                            # 分割文本并创建多个块
+                            for i in range(0, len(combined_text), MAX_TEXT_LENGTH):
+                                chunk = combined_text[i:i+MAX_TEXT_LENGTH]
+                                new_block = {
+                                    "object": "block",
+                                    content_type: {
+                                        "rich_text": [{"text": {"content": chunk}}]
+                                    }
+                                }
+                                
+                                # 保留原始块的其他属性（如颜色）
+                                for key, value in block[content_type].items():
+                                    if key != "rich_text":
+                                        new_block[content_type][key] = value
+                                        
+                                text_chunks.append(new_block)
+                            
+                            # 确保添加的文本块不会超过限制
+                            remaining_slots = actual_max_blocks - len(limited_blocks)
+                            if len(text_chunks) > remaining_slots:
+                                limited_blocks.extend(text_chunks[:remaining_slots])
+                                logger.warning(f"文本块过长，只保留了前 {remaining_slots} 个文本块")
+                                break  # 退出循环，添加截断提示
+                            else:
+                                limited_blocks.extend(text_chunks)
+                        else:
+                            limited_blocks.append(block)
+                else:
+                    # 其他类型的块直接添加
+                    limited_blocks.append(block)
+            else:
+                limited_blocks.append(block)
+        else:
+            limited_blocks.append(block)
+    
+    # 检查是否需要添加截断提示
+    if blocks_processed < len(blocks) or len(limited_blocks) >= actual_max_blocks:
+        # 确保我们始终有空间添加警告块
+        if len(limited_blocks) >= max_blocks:
+            # 移除一个块来腾出空间
+            limited_blocks.pop()
+        
+        # 添加截断警告
+        limited_blocks.append({
+            "object": "block",
+            "callout": {
+                "rich_text": [{"text": {"content": f"内容过长，已截断显示 ({len(limited_blocks)} / {len(blocks)} 块)。完整内容请参考原始文档。"}}],
+                "icon": {"emoji": "⚠️"},
+                "color": "yellow_background"
+            }
+        })
+        
+        logger.warning(f"内容过多 ({len(blocks)} 块)，已截断至 {len(limited_blocks)} 块")
+    
+    # 最终确保块数量不超过限制
+    if len(limited_blocks) > max_blocks:
+        logger.error(f"致命错误：限制后块数量 ({len(limited_blocks)}) 仍然超过 Notion API 限制 ({max_blocks})")
+        return limited_blocks[:max_blocks]
+    
     return limited_blocks
 
 def parse_markdown_formatting(text):
@@ -619,16 +739,17 @@ def create_weekly_report(title, content):
     
     参数：
     title (str): 周报标题
-    content (str): 周报内容
+    content (str): 周报内容，可以包含 [引用文本](ref:页面 ID) 格式的引用
     
     返回：
     str: 创建的页面 URL
     """
     try:
-        # 将内容中的引用格式 [标题](ref:页面 ID) 转换为 Notion 内链
+        # 将内容中的引用格式 [标题](ref:页面 ID) 转换为 Notion 内链格式
+        logger.info("处理周报中的页面引用...")
         processed_content = process_notion_references(content)
         
-        # 将内容转换为 Notion block 格式
+        # 将内容转换为 Notion block 格式，支持内链
         blocks = convert_to_notion_blocks(processed_content)
         
         # 创建页面
@@ -656,8 +777,11 @@ def create_weekly_report(title, content):
             children=blocks
         )
         
+        page_id = new_page['id']
+        logger.info(f"成功创建周报页面：{page_id}")
+        
         # 返回页面 URL
-        return f"https://notion.so/{new_page['id'].replace('-', '')}"
+        return f"https://notion.so/{page_id.replace('-', '')}"
     
     except Exception as e:
         logger.error(f"创建周报页面时出错：{e}")
@@ -666,27 +790,229 @@ def create_weekly_report(title, content):
 def process_notion_references(content):
     """
     处理文本中的 Notion 引用标记，转换为 Notion 链接格式
+    支持格式：[引用文本](ref:页面 ID)
     
     参数：
-    content (str): 包含 [标题](ref:页面 ID) 格式引用的文本
+    content (str): 包含 [引用文本](ref:页面 ID) 格式引用的文本
     
     返回：
-    str: 转换后的文本，引用转为 [[页面 ID]] 格式
+    str: 转换后的文本，引用转为 Notion 可识别的内链格式
     """
     import re
     
-    # 查找格式为 [内容标题](ref:页面 ID) 的引用
-    pattern = r'\[(.*?)\]\(ref:([a-zA-Z0-9]+)\)'
+    # 查找格式为 [引用文本](ref:页面 ID) 的引用
+    pattern = r'\[(.*?)\]\(ref:([a-zA-Z0-9-]+)\)'
     
     def replace_ref(match):
-        title = match.group(1)
+        text = match.group(1)
         page_id = match.group(2)
-        # 返回 Notion 页面链接格式
-        return f"[{title}](https://notion.so/{page_id})"
+        
+        # 返回 Notion 页面链接格式 - 这会被 convert_to_notion_blocks 函数进一步处理
+        # 确保 ID 格式正确（移除连字符，因为 Notion URL 中不使用）
+        clean_id = page_id.replace('-', '')
+        return f"[{text}](https://notion.so/{clean_id})"
     
     # 替换所有匹配项
     processed_text = re.sub(pattern, replace_ref, content)
+    
+    # 记录处理情况
+    original_refs_count = len(re.findall(pattern, content))
+    processed_refs_count = len(re.findall(r'\[(.*?)\]\(https://notion\.so/[a-zA-Z0-9]+\)', processed_text))
+    
+    logger.info(f"处理了 {original_refs_count} 个引用，转换了 {processed_refs_count} 个 Notion 内链")
+    
     return processed_text
+
+def generate_weekly_content(entries):
+    """
+    根据本周条目生成周报内容，并自动创建内链引用
+    
+    参数：
+    entries (list): 本周 Notion 页面对象列表
+    
+    返回：
+    str: 格式化的周报内容，包含内链引用
+    """
+    content = []
+    content.append("# 本周内容总结\n")
+    
+    # 按日期分组
+    entries_by_date = {}
+    for entry in entries:
+        # 跳过周报本身
+        if "Tags" in entry["properties"] and any(tag.get("name") == "周报" 
+                                               for tag in entry["properties"]["Tags"].get("multi_select", [])):
+            continue
+            
+        # 获取条目创建日期
+        created_date = None
+        if "Created" in entry["properties"] and entry["properties"]["Created"].get("date"):
+            date_str = entry["properties"]["Created"]["date"].get("start")
+            if date_str:
+                created_date = date_str.split("T")[0]  # 仅保留日期部分 YYYY-MM-DD
+        
+        if not created_date:
+            created_date = "未知日期"
+        
+        if created_date not in entries_by_date:
+            entries_by_date[created_date] = []
+        
+        entries_by_date[created_date].append(entry)
+    
+    # 按日期排序
+    for date in sorted(entries_by_date.keys()):
+        content.append(f"## {date}\n")
+        
+        # 添加每个条目的摘要和内链
+        for entry in entries_by_date[date]:
+            # 获取条目标题
+            title = "无标题"
+            if "Name" in entry["properties"] and entry["properties"]["Name"].get("title"):
+                title_objects = entry["properties"]["Name"]["title"]
+                if title_objects and "plain_text" in title_objects[0]:
+                    title = title_objects[0]["plain_text"]
+                elif title_objects and "text" in title_objects[0] and "content" in title_objects[0]["text"]:
+                    title = title_objects[0]["text"]["content"]
+            
+            # 获取条目摘要
+            summary = ""
+            if "Summary" in entry["properties"] and entry["properties"]["Summary"].get("rich_text"):
+                summary_objects = entry["properties"]["Summary"]["rich_text"]
+                if summary_objects and "plain_text" in summary_objects[0]:
+                    summary = summary_objects[0]["plain_text"]
+                elif summary_objects and "text" in summary_objects[0] and "content" in summary_objects[0]["text"]:
+                    summary = summary_objects[0]["text"]["content"]
+            
+            # 尝试获取内容块以提取更多详细信息
+            try:
+                page_content = notion.blocks.children.list(block_id=entry["id"])
+                content_text = extract_notion_block_content(page_content.get("results", []))
+                
+                # 如果提取到内容，使用内容的前一部分作为摘要展示
+                if content_text and not summary:
+                    summary = truncate_text(content_text, 150)  # 限制摘要长度
+            except Exception as e:
+                logger.warning(f"提取页面内容时出错：{e}")
+            
+            # 截断摘要
+            if len(summary) > 150:
+                summary = summary[:147] + "..."
+            
+            # 生成包含内链的摘要行
+            page_id = entry["id"]
+            
+            # 使用 ref: 格式，方便后续使用 process_notion_references 处理
+            content.append(f"- [{title}](ref:{page_id}): {summary}")
+        
+        content.append("")  # 添加空行分隔不同日期的内容
+    
+    # 添加结尾，等待 AI 生成的总结
+    content.append("# AI 周报总结\n")
+    content.append("_以下内容由 AI 自动生成_\n")
+    
+    return "\n".join(content)
+
+def extract_notion_block_content(blocks):
+    """
+    从 Notion 块中提取文本内容
+    
+    参数：
+    blocks (list): Notion 块列表
+    
+    返回：
+    str: 提取的文本内容
+    """
+    content = []
+    
+    for block in blocks:
+        block_type = block.get("type")
+        if not block_type:
+            continue
+            
+        block_data = block.get(block_type)
+        if not block_data:
+            continue
+            
+        # 处理不同类型的块
+        if block_type == "paragraph":
+            text = extract_rich_text(block_data.get("rich_text", []))
+            if text:
+                content.append(text)
+        elif block_type in ["heading_1", "heading_2", "heading_3"]:
+            text = extract_rich_text(block_data.get("rich_text", []))
+            if text:
+                # 添加标题标记
+                prefix = "#" * int(block_type[-1])
+                content.append(f"{prefix} {text}")
+        elif block_type == "bulleted_list_item":
+            text = extract_rich_text(block_data.get("rich_text", []))
+            if text:
+                content.append(f"- {text}")
+        elif block_type == "numbered_list_item":
+            text = extract_rich_text(block_data.get("rich_text", []))
+            if text:
+                content.append(f"1. {text}")  # 简化处理，所有项目都用 1.
+        elif block_type == "quote":
+            text = extract_rich_text(block_data.get("rich_text", []))
+            if text:
+                content.append(f"> {text}")
+        elif block_type == "callout":
+            text = extract_rich_t==ext(block_data.get("rich_text", []))
+            if text:
+                icon = ""
+                if "icon" in block_data and "emoji" in block_data["icon"]:
+                    icon = block_data["icon"]["emoji"] + " "
+                content.append(f"> {icon}{text}")
+        elif block_type == "code":
+            text = extract_rich_text(block_data.get("rich_text", []))
+            language = block_data.get("language", "")
+            if text:
+                content.append(f"```{language}\n{text}\n```")
+                
+    return "\n".join(content)
+
+def extract_rich_text(rich_text):
+    """
+    从富文本数组中提取纯文本
+    
+    参数：
+    rich_text (list): Notion 富文本对象列表
+    
+    返回：
+    str: 提取的纯文本
+    """
+    if not rich_text:
+        return ""
+        
+    return "".join([rt.get("plain_text", "") for rt in rich_text])
+
+def create_auto_weekly_report():
+    """
+    自动创建包含本周所有条目的周报
+    
+    返回：
+    str: 创建的周报页面 URL
+    """
+    # 获取本周日期范围
+    today = datetime.now()
+    start_of_week = today - timedelta(days=today.weekday())
+    end_of_week = start_of_week + timedelta(days=6)
+    week_number = today.isocalendar()[1]
+    
+    # 创建周报标题
+    title = f"周报 {today.year} 第{week_number}周 ({start_of_week.strftime('%m.%d')}-{end_of_week.strftime('%m.%d')})"
+    
+    # 获取本周条目
+    entries = get_weekly_entries(days=7)
+    
+    # 生成周报内容
+    content = generate_weekly_content(entries)
+    
+    # 创建周报
+    report_url = create_weekly_report(title, content)
+    
+    logger.info(f"成功创建周报：{title} ({report_url})")
+    return report_url
 
 def add_to_todo_database(content, created_at=None):
     """

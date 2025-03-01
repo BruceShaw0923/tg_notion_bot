@@ -340,63 +340,148 @@ def extract_and_analyze_pdf_text(pdf_path):
 
 def generate_weekly_summary(entries):
     """
-    生成本周内容的格式化摘要，支持 Notion 中的标题、加粗等 Markdown 格式
+    使用 Gemini 生成周报总结，并为内容添加引用标记
     
     参数：
-    entries (list): 本周的 Notion 条目
+    entries (list): Notion 页面条目列表
     
     返回：
-    str: 格式化的周报内容（Markdown 格式）
+    str: 生成的周报总结，包含 Notion 内链引用
     """
-    if not entries:
-        return "本周没有记录任何内容。"
-    
     try:
-        # 提取每个条目的标题、摘要、标签和页面 ID
+        # 提取条目中的关键信息
         entries_data = []
         for entry in entries:
-            title = ""
-            summary = ""
-            tags = []
-            url = ""
-            page_id = entry.get("id", "").replace("-", "")  # 获取并格式化页面 ID
+            # 跳过周报本身
+            if "Tags" in entry["properties"] and any(tag.get("name") == "周报" 
+                                                for tag in entry["properties"]["Tags"].get("multi_select", [])):
+                continue
+                
+            entry_data = {
+                "id": entry["id"],
+                "title": extract_property_text(entry, "Name", "title"),
+                "summary": extract_property_text(entry, "Summary", "rich_text"),
+                "tags": extract_multi_select(entry, "Tags"),
+                "created": extract_date(entry, "Created"),
+                "url": extract_url(entry, "URL"),
+                # 添加原始内容的前 300 个字符，帮助 AI 理解内容
+                "content_preview": get_content_preview(entry["id"])
+            }
+            entries_data.append(entry_data)
             
-            props = entry.get("properties", {})
+        # 无内容时返回提示
+        if not entries_data:
+            return "本周没有添加任何内容。"
             
-            # 提取标题
-            if "Name" in props and props["Name"].get("title"):
-                title = "".join([text.get("plain_text", "") for text in props["Name"]["title"]])
-            
-            # 提取摘要
-            if "Summary" in props and props["Summary"].get("rich_text"):
-                summary = "".join([text.get("plain_text", "") for text in props["Summary"]["rich_text"]])
-            
-            # 提取标签
-            if "Tags" in props and props["Tags"].get("multi_select"):
-                tags = [tag.get("name", "") for tag in props["Tags"]["multi_select"]]
-            
-            # 提取 URL
-            if "URL" in props and props["URL"].get("url"):
-                url = props["URL"]["url"]
-            
-            entries_data.append({
-                "title": title,
-                "summary": summary,
-                "tags": tags,
-                "url": url,
-                "page_id": page_id  # 添加页面 ID 以支持内链
-            })
+        # 将条目转换为 JSON 格式
+        entries_json = json.dumps(entries_data, ensure_ascii=False, indent=2)
         
-        # 使用配置的周报生成提示模板
-        prompt = WEEKLY_SUMMARY_PROMPT.format(
-            entries_json=json.dumps(entries_data, ensure_ascii=False)
-        )
+        # 使用 Gemini 模型生成分析
+        prompt = WEEKLY_SUMMARY_PROMPT.format(entries_json=entries_json)
         
-        response = model.generate_content(prompt, stream=False)
+        # 记录生成请求
+        logger.info(f"发送周报总结生成请求，包含 {len(entries_data)} 个条目")
         
-        # 确保返回的是纯文本格式，保留 Markdown 语法
-        return response.text
+        response = model.generate_content(prompt)
+        
+        if response.text:
+            # 检查生成的内容是否包含引用标记
+            if "[" in response.text and "ref:" in response.text:
+                logger.info("周报生成成功，包含引用标记")
+            else:
+                logger.warning("周报生成成功，但未包含引用标记")
+                
+            return response.text
+        else:
+            return "无法生成周报总结，请稍后再试。"
     
     except Exception as e:
-        logger.error(f"生成周报摘要时出错：{e}")
-        return "生成摘要时出错，请查看日志了解详情。"
+        logger.error(f"生成周报总结时出错：{e}")
+        return f"生成周报时遇到错误：{str(e)}"
+
+def get_content_preview(page_id, max_length=300):
+    """
+    获取页面内容的预览
+    
+    参数：
+    page_id (str): Notion 页面 ID
+    max_length (int): 预览最大长度
+    
+    返回：
+    str: 页面内容预览
+    """
+    try:
+        from services.notion_service import notion, extract_notion_block_content
+        
+        # 获取页面内容块
+        blocks = notion.blocks.children.list(block_id=page_id).get("results", [])
+        
+        # 提取文本内容
+        content = extract_notion_block_content(blocks)
+        
+        # 限制长度
+        if len(content) > max_length:
+            return content[:max_length] + "..."
+        return content
+    except Exception as e:
+        logger.warning(f"获取页面内容预览时出错：{e}")
+        return ""
+
+def extract_property_text(entry, property_name, field_type):
+    """从 Notion 条目中提取文本属性"""
+    if property_name not in entry["properties"]:
+        return ""
+        
+    prop = entry["properties"][property_name]
+    
+    if field_type == "title" and prop.get("title"):
+        text_objects = prop["title"]
+        if text_objects and "plain_text" in text_objects[0]:
+            return text_objects[0]["plain_text"]
+        elif text_objects and "text" in text_objects[0] and "content" in text_objects[0]["text"]:
+            return text_objects[0]["text"]["content"]
+            
+    elif field_type == "rich_text" and prop.get("rich_text"):
+        text_objects = prop["rich_text"]
+        if text_objects and "plain_text" in text_objects[0]:
+            return text_objects[0]["plain_text"]
+        elif text_objects and "text" in text_objects[0] and "content" in text_objects[0]["text"]:
+            return text_objects[0]["text"]["content"]
+            
+    return ""
+
+def extract_multi_select(entry, property_name):
+    """从 Notion 条目中提取多选项属性"""
+    if property_name not in entry["properties"]:
+        return []
+        
+    prop = entry["properties"][property_name]
+    
+    if prop.get("multi_select"):
+        return [item.get("name", "") for item in prop["multi_select"] if "name" in item]
+        
+    return []
+
+def extract_date(entry, property_name):
+    """从 Notion 条目中提取日期属性"""
+    if property_name not in entry["properties"]:
+        return ""
+        
+    prop = entry["properties"][property_name]
+    
+    if prop.get("date") and prop["date"].get("start"):
+        return prop["date"]["start"]
+        
+    return ""
+
+def extract_url(entry, property_name):
+    """从 Notion 条目中提取 URL 属性"""
+    if property_name not in entry["properties"]:
+        return ""
+        
+    prop = entry["properties"][property_name]
+    
+    if prop.get("url"):
+        return prop["url"]
+        
+    return ""

@@ -645,9 +645,29 @@ def prepare_metadata_for_notion(metadata):
     
     return notion_metadata
 
+def error_handler(update, context):
+    """处理 Telegram 机器人运行中的错误"""
+    # 日志记录错误详情
+    logger.error(f"更新 {update} 导致错误：{context.error}")
+    
+    # 如果可能，向用户发送错误通知
+    if update and update.effective_chat:
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"抱歉，处理您的请求时发生了错误。错误已被记录，我们会尽快解决。"
+        )
+
 def setup_telegram_bot():
     """设置并启动 Telegram 机器人"""
-    updater = Updater(TELEGRAM_BOT_TOKEN)
+    # 设置更长的超时时间和重试连接逻辑
+    request_kwargs = {
+        'connect_timeout': 30.0,  # 连接超时时间
+        'read_timeout': 30.0,     # 读取超时时间
+        'con_pool_size': 10,      # 连接池大小
+    }
+    
+    # 创建 Updater 并提供网络设置
+    updater = Updater(TELEGRAM_BOT_TOKEN, request_kwargs=request_kwargs)
     dispatcher = updater.dispatcher
     
     # 注册处理程序
@@ -660,6 +680,10 @@ def setup_telegram_bot():
     dispatcher.add_handler(MessageHandler(Filters.photo, process_message))
     dispatcher.add_handler(MessageHandler(Filters.document, process_document))
     dispatcher.add_handler(MessageHandler(Filters.video, process_message))
+    
+    # 添加错误处理器
+    dispatcher.add_error_handler(error_handler)
+    logger.info("已添加错误处理器")
     
     return updater
 
