@@ -1,16 +1,80 @@
 # TG-Notion Bot
 
-TG-Notion Bot 是一个自动化工具，可以将 Telegram 消息无缝保存到 Notion 数据库，并使用 Google Gemini AI 进行内容分析。
+TG-Notion Bot 是一个 Telegram 机器人，集成了 Notion、Zotero 和 Google Gemini 等多种服务，帮助用户高效管理知识和工作流。
 
-## 主要功能
+## 功能特点
 
-* 🤖  **自动保存消息** : 将 Telegram 消息直接保存到 Notion
-* 🧠  **AI 内容分析** : 使用 Google Gemini AI 自动生成摘要和标签
-* 📄  **PDF 解析** : 解析学术论文 PDF 并提取关键信息
-* 🌐  **URL 内容提取** : 自动解析和保存 URL 内容
-* ✅  **待办事项管理** : 快速添加任务到 Notion 待办数据库
-* 📊  **自动周报生成** : 自动汇总你的每周内容并生成报告
-* 🐳  **Docker 支持** : 支持 Docker 容器化部署
+### 基本功能
+
+- 将 Telegram 消息自动保存到 Notion
+- 自动提取链接内容并分析
+- 使用 #todo 标签快速创建待办事项
+- 通过 Google Gemini 自动分析内容并生成摘要
+
+### 论文管理功能
+
+- 从 Zotero 同步论文到 Notion
+- 使用 Google Gemini 自动分析论文内容
+- 提取论文摘要、关键词和主要观点
+- 支持按最新添加或时间范围同步
+
+### 周报功能
+
+- 自动生成周报摘要
+- 汇总一周内处理的内容
+
+## 命令列表
+
+### 基本命令
+
+- `/start` - 显示欢迎信息
+- `/help` - 显示帮助信息
+- `/weekly` - 手动触发生成本周周报
+
+### Zotero 相关命令
+
+- `/collections` - 列出所有 Zotero 收藏集
+- `/sync_papers [收藏集ID] [数量]` - 同步最近添加的论文
+
+  - 例如: `/sync_papers ABC12345 10` - 同步指定收藏集的10篇最新论文
+  - 例如: `/sync_papers 5` - 同步所有收藏集的5篇最新论文
+- `/sync_days [收藏集ID] [天数]` - 同步指定天数内添加的论文
+
+  - 例如: `/sync_days ABC12345 14` - 同步指定收藏集14天内的论文
+  - 例如: `/sync_days 3` - 同步所有收藏集3天内的论文
+
+## 使用流程示例
+
+1. **保存笔记**
+
+   - 直接向机器人发送文本消息
+   - 机器人会自动分析内容并保存到 Notion
+2. **创建待办事项**
+
+   - 发送带有 #todo 标签的消息
+   - 例如: "准备明天的会议材料 #todo"
+3. **分析网页内容**
+
+   - 发送网页链接
+   - 机器人会提取内容并分析保存
+4. **同步论文**
+
+   - 使用 `/collections` 查看可用收藏集
+   - 使用 `/sync_papers` 或 `/sync_days` 命令同步论文
+   - 机器人会自动下载并分析论文内容
+5. **生成周报**
+
+   - 周报会自动生成
+   - 也可以使用 `/weekly` 手动触发
+
+## 配置要求
+
+使用此机器人需要配置以下环境变量:
+
+- Telegram Bot Token
+- Notion API 密钥和数据库 ID
+- Zotero API 密钥和用户 ID
+- Google Gemini API 密钥
 
 ## 系统要求
 
@@ -49,6 +113,11 @@ GEMINI_API_KEY=your_gemini_api_key
 # 周报配置
 WEEKLY_REPORT_DAY=Sunday
 WEEKLY_REPORT_HOUR=20
+
+# zotero配置
+ZOTERO_API_KEY=your_zotero_api_key
+ZOTERO_USER_ID=your_zotero_user_id
+ZOTERO_FOLDER_ID=your_zotero_folder_id
 ```
 
 ### 使用 Docker 部署 (推荐)

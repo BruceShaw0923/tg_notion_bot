@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 # 初始化 Notion 客户端
 notion = Client(auth=NOTION_TOKEN)
 
+# 添加这个函数，返回已初始化的 notion 客户端
+def get_notion_client():
+    """
+    获取已初始化的 Notion 客户端
+    
+    返回：
+        Client: Notion 客户端实例
+    """
+    global notion
+    return notion
+
 # 导入 Gemini 服务
 try:
     from services.gemini_service import analyze_pdf_content
@@ -957,7 +968,7 @@ def extract_notion_block_content(blocks):
             if text:
                 content.append(f"> {text}")
         elif block_type == "callout":
-            text = extract_rich_t==ext(block_data.get("rich_text", []))
+            text = extract_rich_text(block_data.get("rich_text", []))
             if text:
                 icon = ""
                 if "icon" in block_data and "emoji" in block_data["icon"]:
@@ -1068,7 +1079,67 @@ def add_to_todo_database(content, created_at=None):
         logger.error(f"创建待办事项时出错：{e}")
         raise
 
-def add_to_papers_database(title, analysis, created_at=None, pdf_url=None, metadata=None):
+def get_existing_dois():
+    """
+    从 Notion 论文数据库中获取所有已存在的 DOI
+    
+    返回：
+    set: 已存在的 DOI 集合
+    """
+    if not NOTION_PAPERS_DATABASE_ID:
+        logger.error("未设置论文数据库 ID")
+        return set()
+    
+    try:
+        # 检查数据库是否有 DOI 字段
+        db_info = notion.databases.retrieve(database_id=NOTION_PAPERS_DATABASE_ID)
+        if "DOI" not in db_info.get('properties', {}):
+            logger.warning("论文数据库中没有 DOI 字段，无法检查重复")
+            return set()
+        
+        # 查询所有条目
+        existing_dois = set()
+        start_cursor = None
+        has_more = True
+        
+        while has_more:
+            response = notion.databases.query(
+                database_id=NOTION_PAPERS_DATABASE_ID,
+                start_cursor=start_cursor,
+                page_size=100,  # 每页最多获取 100 条
+                filter={
+                    "property": "DOI",
+                    "rich_text": {
+                        "is_not_empty": True
+                    }
+                }
+            )
+            
+            # 提取 DOI
+            for page in response["results"]:
+                if "DOI" in page["properties"]:
+                    rich_text = page["properties"]["DOI"].get("rich_text", [])
+                    if rich_text and "plain_text" in rich_text[0]:
+                        doi = rich_text[0]["plain_text"].strip().lower()
+                        if doi:
+                            existing_dois.add(doi)
+            
+            # 检查是否有更多数据
+            has_more = response.get("has_more", False)
+            start_cursor = response.get("next_cursor")
+            
+            if has_more:
+                # 避免请求过于频繁
+                time.sleep(0.5)
+        
+        logger.info(f"从 Notion 中获取到 {len(existing_dois)} 个已同步的 DOI")
+        return existing_dois
+    
+    except Exception as e:
+        logger.error(f"获取已存在的 DOI 时出错：{e}")
+        return set()
+
+def add_to_papers_database(title, analysis, created_at=None, pdf_url=None, metadata=None, zotero_id=None):
     """
     将论文分析添加到论文数据库
     
@@ -1078,6 +1149,7 @@ def add_to_papers_database(title, analysis, created_at=None, pdf_url=None, metad
     created_at (datetime): 创建时间
     pdf_url (str): 原始 PDF URL
     metadata (dict, optional): 其他元数据，如作者、DOI、发表日期等
+    zotero_id (str, optional): Zotero 条目 ID，作为备用标识符
     
     返回：
     str: 创建的页面 ID
@@ -1098,6 +1170,12 @@ def add_to_papers_database(title, analysis, created_at=None, pdf_url=None, metad
             "date": {"start": created_at.isoformat()}
         }
     }
+    
+    # 如果有 Zotero ID，作为备用标识符添加到属性中
+    if zotero_id:
+        properties["ZoteroID"] = {
+            "rich_text": [{"text": {"content": zotero_id}}]
+        }
     
     # 如果有元数据，添加到属性中
     if metadata:
@@ -1332,3 +1410,143 @@ def download_pdf(url):
     except Exception as e:
         logger.error(f"下载 PDF 时出错：{e}")
         return None, 0
+
+def check_paper_exists_in_notion(doi: str) -> bool:
+    """
+    检查论文是否已存在于 Notion 数据库中（通过 DOI）
+    
+    参数：
+        doi: 论文的 DOI
+        
+    返回：
+        bool: 如果论文已存在则返回 True，否则返回 False
+    """
+    if not doi:
+        return False
+    
+    try:
+        # 使用全局 notion 客户端，而不是调用函数
+        # notion = get_notion_client() 这行会导致错误
+        
+        # 查询 Notion 数据库
+        response = notion.databases.query(
+            database_id=NOTION_PAPERS_DATABASE_ID,
+            filter={
+                "property": "DOI",
+                "rich_text": {
+                    "equals": doi
+                }
+            }
+        )
+        
+        # 如果找到结果，则论文已存在
+        return len(response.get('results', [])) > 0
+    
+    except Exception as e:
+        logger.error(f"检查论文是否存在时出错：{e}")
+        return False
+
+def ensure_papers_database_properties():
+    """确保论文数据库有所有必要的属性"""
+    try:
+        notion = get_notion_client()
+        
+        # 获取当前数据库结构
+        database = notion.databases.retrieve(database_id=NOTION_PAPERS_DATABASE_ID)
+        current_properties = database.get('properties', {})
+        
+        # 检查是否需要更新
+        needs_update = False
+        new_properties = {}
+        
+        # 检查并添加 DOI 属性
+        if 'DOI' not in current_properties:
+            new_properties['DOI'] = {
+                "rich_text": {}
+            }
+            needs_update = True
+        
+        # 检查并添加其他必要属性（以下是示例）
+        required_properties = {
+            "Authors": {"rich_text": {}},
+            "Publication": {"rich_text": {}},
+            "Publication Date": {"date": {}},
+            "URL": {"url": {}},
+            "Tags": {"multi_select": {}}
+        }
+        
+        for prop_name, prop_config in required_properties.items():
+            if prop_name not in current_properties:
+                new_properties[prop_name] = prop_config
+                needs_update = True
+        
+        # 如果需要更新，执行更新操作
+        if needs_update:
+            logger.info(f"正在更新论文数据库属性...")
+            notion.databases.update(
+                database_id=NOTION_PAPERS_DATABASE_ID,
+                properties=new_properties
+            )
+            logger.info(f"论文数据库属性已更新")
+    
+    except Exception as e:
+        logger.error(f"确保论文数据库属性时出错：{e}")
+
+def get_existing_zotero_ids() -> set[str]:
+    """
+    获取已存在于 Notion 数据库中的 ZoteroID 列表
+    
+    返回：
+        set[str]: ZoteroID 集合
+    """
+    try:
+        notion_service = get_notion_service()
+        
+        # 查询数据库中所有包含 Zotero ID 的记录
+        results = []
+        has_more = True
+        next_cursor = None
+        
+        # 获取所有页面，可能需要分页
+        while has_more:
+            query_params = {
+                "filter": {
+                    "property": "ZoteroID",
+                    "rich_text": {
+                        "is_not_empty": True
+                    }
+                }
+            }
+            
+            if next_cursor:
+                query_params["start_cursor"] = next_cursor
+                
+            response = notion_service.client.databases.query(
+                database_id=notion_service.papers_database_id,
+                **query_params
+            )
+            
+            results.extend(response.get("results", []))
+            has_more = response.get("has_more", False)
+            next_cursor = response.get("next_cursor")
+        
+        # 提取所有 Zotero ID
+        zotero_ids = set()
+        for page in results:
+            try:
+                zotero_id_prop = page.get("properties", {}).get("ZoteroID", {})
+                if zotero_id_prop and "rich_text" in zotero_id_prop:
+                    rich_text = zotero_id_prop.get("rich_text", [])
+                    if rich_text:
+                        zotero_id = rich_text[0].get("plain_text", "").strip()
+                        if zotero_id:
+                            zotero_ids.add(zotero_id)
+            except Exception as e:
+                logger.warning(f"提取 Zotero ID 时出错：{e}")
+                
+        logger.info(f"从 Notion 数据库中获取到 {len(zotero_ids)} 个 Zotero ID")
+        return zotero_ids
+    
+    except Exception as e:
+        logger.error(f"获取现有 Zotero ID 列表时出错：{e}")
+        return set()

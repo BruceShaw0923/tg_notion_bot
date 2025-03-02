@@ -1,22 +1,29 @@
+import os
+import sys
 import logging
 import schedule
 import time
 from datetime import datetime
 import threading
-import sys
 import signal
+from telegram.ext import CommandHandler, Filters
+from pathlib import Path
 from services.telegram_service import setup_telegram_bot
 from services.weekly_report import generate_weekly_report
-from config import WEEKLY_REPORT_DAY, WEEKLY_REPORT_HOUR
+from config import WEEKLY_REPORT_DAY, WEEKLY_REPORT_HOUR, TELEGRAM_BOT_TOKEN, ALLOWED_USER_IDS, LOG_LEVEL
 from telegram.error import (TelegramError, Unauthorized, BadRequest, 
                            TimedOut, ChatMigrated, NetworkError)
+
+# 添加项目根目录到 Python 路径
+root_dir = Path(__file__).parent
+sys.path.append(str(root_dir))
 
 # 配置日志
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL),
     handlers=[
-        logging.FileHandler("bot.log"),
+        logging.FileHandler(os.path.join(root_dir, "bot.log")),
         logging.StreamHandler()
     ]
 )
@@ -86,39 +93,36 @@ def start_polling(updater, retry_count=0):
 
 def main():
     """主函数"""
-    logger.info("启动 TG-Notion 自动化机器人")
+    logger.info("启动 TG-Notion 机器人...")
     
-    # 设置信号处理
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    try:
-        # 设置并获取 Telegram 机器人
-        logger.info("正在设置 Telegram 机器人...")
-        updater = setup_telegram_bot()
-        
-        # 安排周报生成任务
-        logger.info("正在设置定时任务...")
-        schedule_weekly_report()
-        
-        # 在单独的线程中运行调度器
-        scheduler_thread = threading.Thread(target=run_scheduler)
-        scheduler_thread.daemon = True
-        scheduler_thread.start()
-        
-        # 启动机器人，添加重试逻辑
-        start_polling(updater)
-        
-        # 等待，直到收到停止信号
-        updater.idle()
-    
-    except KeyboardInterrupt:
-        logger.info("接收到中断信号，正在停止机器人...")
-    except Exception as e:
-        logger.error(f"启动机器人时出错：{e}")
+    # 确认配置
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("错误：未设置 Telegram 机器人令牌")
         return 1
     
+    if not ALLOWED_USER_IDS:
+        logger.warning("警告：未设置允许的用户 ID，任何人都可以访问机器人")
+    
+    # 设置机器人
+    updater = setup_telegram_bot()
+    
+    # 设置定时任务
+    schedule_weekly_report()
+    
+    # 在单独的线程中运行调度器
+    scheduler_thread = threading.Thread(target=run_scheduler)
+    scheduler_thread.daemon = True
+    scheduler_thread.start()
+    
+    # 启动机器人，添加重试逻辑
+    start_polling(updater)
+    
+    # 等待，直到收到停止信号
+    updater.idle()
+    
+    logger.info("机器人已停止")
     return 0
 
-if __name__ == '__main__':
-    sys.exit(main())
+if __name__ == "__main__":
+    exit_code = main()
+    sys.exit(exit_code)

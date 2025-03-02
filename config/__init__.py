@@ -30,10 +30,25 @@ ZOTERO_FOLDER_ID = os.getenv("ZOTERO_FOLDER_ID", "")  # 默认文件夹 ID
 WEEKLY_REPORT_DAY = os.getenv("WEEKLY_REPORT_DAY", "Sunday")
 WEEKLY_REPORT_HOUR = int(os.getenv("WEEKLY_REPORT_HOUR", "20"))
 
+
+# Zotero 本地路径配置
+# 如果设置，将直接使用本地 Zotero 数据库
+# 如果留空，程序会尝试自动检测路径
+ZOTERO_LOCAL_PATH = os.getenv("ZOTERO_LOCAL_PATH", "")
+ZOTERO_STORAGE_PATH = os.getenv("ZOTERO_STORAGE_PATH", "")
+
+# 坚果云同步配置
+USING_NUTSTORE_SYNC = os.getenv("USING_NUTSTORE_SYNC", "True").lower() == "true"
+# 坚果云同步的 Zotero 根目录
+NUTSTORE_BASE_PATH = os.getenv("NUTSTORE_BASE_PATH", "")
+
 # 预定义标签类别
 PREDEFINED_TAG_CATEGORIES = [
     "tools", "academic", "knowledge", "mental", 
-    "technology", "math", "management"
+    "technology", "math", "management", "culture",
+    "life", "work", "reading", "writing", "health",
+    "exercise", "entertainment", "travel", "social",
+    "relationship", "spiritual", "others"
 ]
 
 # 功能开关

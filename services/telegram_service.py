@@ -4,13 +4,23 @@ import logging
 import os
 import tempfile
 from config import TELEGRAM_BOT_TOKEN, ALLOWED_USER_IDS
-from services.notion_service import add_to_notion, add_to_todo_database, add_to_papers_database
+from services.notion_service import (
+    add_to_notion, add_to_todo_database, add_to_papers_database,
+    is_pdf_url, download_pdf
+)
 from services.gemini_service import analyze_content, analyze_pdf_content
 from services.url_service import extract_url_content
 from utils.helpers import extract_url_from_text, extract_all_urls_from_text, is_url_only, download_file
-from services.zotero_service import sync_recent_pdfs, get_collections
 from datetime import datetime
 import re
+import requests
+
+# 导入论文处理器# 导入论文处理器 (同步版本)
+from handlers.paper_handlers import (
+    list_collections, 
+    sync_papers_by_count, 
+    sync_papers_by_days
+)
 
 # 配置日志
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -26,15 +36,18 @@ def start(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(
         '欢迎使用 TG-Notion 自动化机器人!\n'
         '您可以直接发送消息、链接或文件，机器人会将其保存到 Notion 数据库。\n'
+        '\n'
         '特殊功能:\n'
         '- 发送纯 URL 会自动解析网页内容\n'
         '- 发送 PDF 文件会解析论文内容\n'
         '- 使用 #todo 标签可将任务添加到待办事项\n'
         '\n'
-        '命令列表:\n'
-        '/start - 显示此帮助信息\n'
-        '/help - 显示帮助信息\n'
-        '/weekly - 手动触发生成本周周报'
+        'Zotero 功能:\n'
+        '- /collections - 列出所有收藏集\n'
+        '- /sync_papers - 同步最新论文\n'
+        '- /sync_days - 同步近期论文\n'
+        '\n'
+        '输入 /help 查看详细使用说明'
     )
 
 def help_command(update: Update, context: CallbackContext) -> None:
@@ -50,9 +63,16 @@ def help_command(update: Update, context: CallbackContext) -> None:
         '4. 在消息中使用 #todo 标签将任务添加到待办事项列表\n'
         '5. 内容会被 AI 自动分析并生成摘要和标签\n'
         '6. 每周自动生成周报总结\n'
-        '7. 使用 /weekly 命令可手动触发生成本周周报\n'
-        '8. 使用 /zotero [天数] [collection:集合 ID] 同步 Zotero 内容\n'
-        '9. 使用 /collections 查看所有 Zotero 集合列表'
+        '\n'
+        'Zotero 相关命令:\n'
+        '- /collections - 列出所有 Zotero 收藏集\n'
+        '- /sync_papers [收藏集 ID] [数量] - 同步最近添加的指定数量论文\n'
+        '- /sync_days [收藏集 ID] [天数] - 同步指定天数内添加的所有论文\n'
+        '\n'
+        '其他命令:\n'
+        '- /start - 显示欢迎信息\n'
+        '- /help - 显示此帮助信息\n'
+        '- /weekly - 手动触发生成本周周报'
     )
 
 def process_message(update: Update, context: CallbackContext) -> None:
@@ -163,7 +183,7 @@ def handle_multiple_urls_message(update: Update, content, urls, created_at):
 def handle_url_message(update: Update, url, created_at):
     """处理纯 URL 消息"""
     # 首先检查是否是 PDF URL
-    from services.notion_service import is_pdf_url
+    # 移除内部导入，使用顶部导入的函数
     
     if is_pdf_url(url):
         update.message.reply_text("检测到 PDF 链接，正在下载并解析论文内容，请稍候...")
@@ -201,8 +221,7 @@ def handle_url_message(update: Update, url, created_at):
 def handle_pdf_url(update: Update, url, created_at):
     """处理 PDF URL，下载并解析为论文"""
     try:
-        # 从 URL 下载 PDF
-        from services.notion_service import download_pdf
+        # 从 URL 下载 PDF，使用顶部导入的函数
         pdf_path, file_size = download_pdf(url)
         
         if not pdf_path:
@@ -365,236 +384,56 @@ def weekly_report_command(update: Update, context: CallbackContext) -> None:
         logger.error(f"生成周报时出错：{e}")
         update.message.reply_text(f"⚠️ 生成周报时出错：{str(e)}")
 
-def sync_zotero_command(update: Update, context: CallbackContext) -> None:
-    """同步 Zotero 最近的 PDF 文件"""
-    if update.effective_user.id not in ALLOWED_USER_IDS:
-        return
-    
-    # 解析参数
-    args = context.args
-    days = 3  # 默认天数
-    collection_id = None
-    
-    # 处理参数
-    if args:
-        for arg in args:
-            # 检查是否是数字（天数）
-            if arg.isdigit():
-                days = int(arg)
-            # 检查是否是集合指定参数
-            elif arg.startswith("collection:") or arg.startswith("c:"):
-                collection_id = arg.split(":", 1)[1]
-    
-    # 验证 days 参数
-    if days <= 0:
-        update.message.reply_text("⚠️ 天数必须大于 0，已设为默认值 3 天")
-        days = 3
-    elif days > 30:
-        update.message.reply_text("⚠️ 天数过大可能导致性能问题，已限制为最多 30 天")
-        days = 30
-    
-    # 记录本地和 UTC 时间，帮助调试
-    local_time = datetime.now()
-    utc_time = datetime.utcnow()
-    logger.info(f"当前本地时间：{local_time.isoformat()}, UTC 时间：{utc_time.isoformat()}")
-    
-    # 根据是否指定集合显示不同消息
-    if collection_id:
-        from services.zotero_service import collection_exists
-        
-        # 先验证集合是否存在
-        if not collection_exists(collection_id):
-            update.message.reply_text(f"⚠️ 集合 {collection_id} 不存在或无法访问。使用 /collections 命令查看可用集合列表。")
-            return
-            
-        update.message.reply_text(f"开始同步 Zotero 集合 {collection_id} 中最近 {days} 天添加的 PDF 文件...")
-    else:
-        update.message.reply_text(f"开始同步 Zotero 中最近 {days} 天添加的 PDF 文件...")
-    
-    try:
-        # 获取并处理 PDF 文件
-        pdf_files = sync_recent_pdfs(days, collection_id)
-        
-        if not pdf_files:
-            update.message.reply_text("未找到最近添加的 PDF 文件")
-            return
-        
-        update.message.reply_text(f"找到 {len(pdf_files)} 个条目，开始处理...")
-        
-        # 逐个处理 PDF 文件
-        success_count = 0
-        metadata_only_count = 0
-        
-        for pdf_path, filename, metadata in pdf_files:
-            try:
-                # 检查是否只有元数据没有 PDF 文件
-                if pdf_path is None:
-                    update.message.reply_text(f"⚠️ 无法下载文件：{filename}，但将存储其元数据")
-                    metadata_only_count += 1
-                    
-                    # 将元数据直接添加到 Notion，不包含 PDF 分析
-                    title = metadata.get('title', '') or filename
-                    
-                    # 创建简单的分析结果
-                    simple_analysis = {
-                        "title": title,
-                        "brief_summary": metadata.get('abstractNote', '无摘要'),
-                        "details": f"## 元数据\n\n**标题**: {title}无法下载 PDF 文件，仅显示元数据。",
-                        "insight": "无法下载 PDF 文件进行分析。"
-                    }
-                    
-                    # 准备元数据字典
-                    notion_metadata = prepare_metadata_for_notion(metadata)
-                    
-                    # 添加到 Notion 数据库
-                    page_id = add_to_papers_database(
-                        title=title,
-                        analysis=simple_analysis,
-                        created_at=datetime.now(),
-                        pdf_url=metadata.get('url', ''),  # 可能是 DOI 链接或原始 URL
-                        metadata=notion_metadata
-                    )
-                    
-                    success_count += 1
-                    continue
-                
-                update.message.reply_text(f"正在处理：{filename}...")
-                
-                # 使用 Gemini 分析 PDF 内容
-                pdf_analysis = analyze_pdf_content(pdf_path, metadata.get('url', ''))
-                
-                # 标题优先使用元数据中的标题
-                title = metadata.get('title', '') or filename
-                
-                # 添加元数据到分析结果
-                enriched_analysis = enrich_analysis_with_metadata(pdf_analysis, metadata)
-                
-                # 准备元数据字典
-                notion_metadata = prepare_metadata_for_notion(metadata)
-                
-                # 添加到 Notion 数据库
-                page_id = add_to_papers_database(
-                    title=title,
-                    analysis=enriched_analysis,
-                    created_at=datetime.now(),
-                    pdf_url=metadata.get('url', ''),
-                    metadata=notion_metadata
-                )
-                
-                success_count += 1
-                
-                # 清理临时文件
-                try:
-                    os.unlink(pdf_path)
-                except:
-                    pass
-                
-            except Exception as e:
-                logger.error(f"处理 PDF 文件 {filename} 时出错：{e}")
-                update.message.reply_text(f"⚠️ 处理 {filename} 时出错：{str(e)}")
-        
-        # 显示结果统计
-        if metadata_only_count > 0:
-            update.message.reply_text(f"✅ Zotero 同步完成！成功处理 {success_count}/{len(pdf_files)} 个条目，其中 {metadata_only_count} 个仅包含元数据（无法下载 PDF 文件）。")
-        else:
-            update.message.reply_text(f"✅ Zotero 同步完成！成功处理 {success_count}/{len(pdf_files)} 个条目。")
-    
-    except Exception as e:
-        logger.error(f"Zotero 同步过程中出错：{e}")
-        update.message.reply_text(f"⚠️ Zotero 同步过程中出错：{str(e)}")
-
-def list_zotero_collections_command(update: Update, context: CallbackContext) -> None:
-    """列出所有 Zotero 集合（文件夹）"""
-    if update.effective_user.id not in ALLOWED_USER_IDS:
-        return
-    
-    update.message.reply_text("正在获取 Zotero 集合列表...")
-    
-    try:
-        collections = get_collections()
-        
-        if not collections:
-            update.message.reply_text("未找到 Zotero 集合")
-            return
-        
-        # 构建集合列表消息
-        message = "Zotero 集合列表：\n\n"
-        for i, collection in enumerate(collections, 1):
-            collection_data = collection.get('data', {})
-            collection_id = collection_data.get('key', '')
-            collection_name = collection_data.get('name', f'未命名集合 {i}')
-            message += f"{i}. {collection_name}\n   ID: {collection_id}\n\n"
-        
-        message += "\n使用方法：/zotero [天数] collection:集合 ID"
-        
-        update.message.reply_text(message)
-    
-    except Exception as e:
-        logger.error(f"获取 Zotero 集合列表时出错：{e}")
-        update.message.reply_text(f"⚠️ 获取 Zotero 集合列表时出错：{str(e)}")
-
-def enrich_analysis_with_metadata(analysis, metadata):
+def enrich_analysis_with_metadata(analysis: dict, metadata: dict) -> dict:
     """
-    使用元数据丰富分析结果
+    将 Zotero 元数据添加到 Gemini 分析结果
     
     参数：
-    analysis (dict): PDF 分析结果
-    metadata (dict): Zotero 元数据
-    
+        analysis: Gemini 分析结果
+        metadata: Zotero 元数据
+        
     返回：
-    dict: 丰富后的分析结果
+        enriched_analysis: 添加元数据后的分析结果
     """
-    # 如果分析结果为空，创建一个新字典
-    if not analysis:
-        analysis = {
-            "title": "",
-            "brief_summary": "",
-            "details": "",
-            "insight": ""
-        }
+    result = analysis.copy() if analysis else {}
     
-    # 用元数据补充分析结果
-    if metadata.get('title') and not analysis.get('title'):
-        analysis['title'] = metadata.get('title')
+    # 使用元数据中的标题（如果存在且分析中未提供）
+    if metadata.get('title') and not result.get('title'):
+        result['title'] = metadata['title']
     
-    if metadata.get('abstractNote') and not analysis.get('brief_summary'):
-        analysis['brief_summary'] = metadata.get('abstractNote')
+    # 添加作者信息
+    if metadata.get('authors'):
+        result['authors'] = metadata['authors']
     
-    # 添加元数据部分
-    meta_section = "\n\n## 文献元数据\n\n"
+    # 添加 DOI
+    if metadata.get('doi'):
+        result['doi'] = metadata['doi']
     
-    # 添加作者
-    creators = metadata.get('creators', [])
-    if creators:
-        authors = [f"{c.get('firstName', '')} {c.get('lastName', '')}" for c in creators]
-        meta_section += f"**作者**: {', '.join(authors)}\n\n"
-    
-    # 添加发表信息
-    if metadata.get('publicationTitle'):
-        meta_section += f"**发表于**: {metadata.get('publicationTitle')}\n\n"
+    # 添加出版信息
+    if metadata.get('publication'):
+        result['publication'] = metadata['publication']
     
     # 添加日期
     if metadata.get('date'):
-        meta_section += f"**日期**: {metadata.get('date')}\n\n"
+        result['date'] = metadata['date']
     
-    # 添加 DOI
-    if metadata.get('DOI'):
-        meta_section += f"**DOI**: {metadata.get('DOI')}\n\n"
+    # 添加 URL（如果元数据中有而分析中没有）
+    if metadata.get('url') and not result.get('url'):
+        result['url'] = metadata['url']
     
-    # 添加标签
-    tags = metadata.get('tags', [])
-    if tags:
-        tag_names = [tag.get('tag', '') for tag in tags]
-        meta_section += f"**标签**: {', '.join(tag_names)}\n\n"
+    # 添加摘要（如果元数据中有而分析中没有）
+    if metadata.get('abstract') and not result.get('brief_summary'):
+        result['brief_summary'] = metadata['abstract']
     
-    # 添加 Zotero 链接
+    # 添加 Zotero 标签
+    if metadata.get('tags'):
+        result['zotero_tags'] = metadata['tags']
+    
+    # 添加 Zotero 键值
     if metadata.get('zotero_key'):
-        meta_section += f"**Zotero**: zotero://select/library/items/{metadata.get('zotero_key')}\n\n"
+        result['zotero_key'] = metadata['zotero_key']
     
-    # 将元数据部分附加到详细信息中
-    analysis['details'] = analysis.get('details', '') + meta_section
-    
-    return analysis
+    return result
 
 def prepare_metadata_for_notion(metadata):
     """
@@ -626,9 +465,9 @@ def prepare_metadata_for_notion(metadata):
     if metadata.get('date'):
         notion_metadata['date'] = metadata.get('date')
     
-    # 处理 DOI
+    # 处理 DOI - 确保保存为小写以便一致性比较
     if metadata.get('DOI'):
-        notion_metadata['doi'] = metadata.get('DOI')
+        notion_metadata['doi'] = metadata.get('DOI', '').lower().strip()
     
     # 处理 Zotero 链接
     if metadata.get('zotero_key'):
@@ -670,12 +509,20 @@ def setup_telegram_bot():
     updater = Updater(TELEGRAM_BOT_TOKEN, request_kwargs=request_kwargs)
     dispatcher = updater.dispatcher
     
+    # 创建用户过滤器
+    user_filter = Filters.user(user_id=ALLOWED_USER_IDS) if ALLOWED_USER_IDS else None
+    
     # 注册处理程序
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("help", help_command))
     dispatcher.add_handler(CommandHandler("weekly", weekly_report_command))
-    dispatcher.add_handler(CommandHandler("zotero", sync_zotero_command))
-    dispatcher.add_handler(CommandHandler("collections", list_zotero_collections_command))
+    
+    # 添加论文处理命令
+    dispatcher.add_handler(CommandHandler("collections", list_collections, filters=user_filter))
+    dispatcher.add_handler(CommandHandler("sync_papers", sync_papers_by_count, filters=user_filter))
+    dispatcher.add_handler(CommandHandler("sync_days", sync_papers_by_days, filters=user_filter))
+    
+    # 添加消息处理器
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_message))
     dispatcher.add_handler(MessageHandler(Filters.photo, process_message))
     dispatcher.add_handler(MessageHandler(Filters.document, process_document))
@@ -690,4 +537,5 @@ def setup_telegram_bot():
 # 确保函数被正确导出
 __all__ = ['setup_telegram_bot', 'start', 'help_command', 'process_message', 
            'handle_url_message', 'handle_todo_message', 'process_document', 
-           'handle_pdf_document', 'weekly_report_command', 'handle_pdf_url', 'handle_multiple_urls_message']
+           'handle_pdf_document', 'weekly_report_command', 'handle_pdf_url',
+           'handle_multiple_urls_message', 'enrich_analysis_with_metadata']

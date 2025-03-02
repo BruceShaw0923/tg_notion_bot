@@ -1,810 +1,919 @@
-import requests
-import tempfile
-import os
-import time
-import logging
-from datetime import datetime, timedelta
-from config import ZOTERO_API_KEY, ZOTERO_USER_ID
-from urllib.parse import urlparse, unquote
-from dateutil.parser import parse
-import pytz
+"""
+Zotero 服务：提供 Zotero API 相关功能，包括获取收藏集、同步论文到 Notion 等
+"""
 
+import logging
+import os
+import re
+import time
+import unicodedata
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Any, Union, Set
+from urllib.parse import urlparse, unquote
+
+from pyzotero import zotero
+import requests
+from dotenv import load_dotenv
+
+from config import ZOTERO_API_KEY, ZOTERO_USER_ID
+
+# 修改导入方式，不再导入 NotionService 和 GeminiService 类
+import services.notion_service as notion_service
+import services.gemini_service as gemini_service
+
+# 加载环境变量
+load_dotenv()
+
+# 配置日志
 logger = logging.getLogger(__name__)
 
-# Zotero API 基础 URL
-API_BASE_URL = "https://api.zotero.org"
+# 单例实例
+_zotero_service_instance = None
 
-def get_headers():
-    """
-    获取 Zotero API 请求头
-    """
-    return {
-        "Zotero-API-Key": ZOTERO_API_KEY,
-        "Zotero-API-Version": "3"
-    }
-
-def get_recent_items_by_date_range(days=7):
-    """
-    使用替代方法获取最近几天添加或修改的条目
+class ZoteroService:
+    """Zotero 服务类，处理与 Zotero API 的所有交互"""
     
-    参数：
-    days (int): 最近几天的时间范围
-    
-    返回：
-    list: 条目列表
-    """
-    if not ZOTERO_API_KEY or not ZOTERO_USER_ID:
-        logger.error("未配置 Zotero API 密钥或用户 ID")
-        return []
-    
-    # 计算时间范围 - 使用带时区的 datetime
-    end_date = datetime.now(pytz.UTC)  
-    start_date = end_date - timedelta(days=days)
-    
-    logger.info(f"获取 {start_date.isoformat()} 到 {end_date.isoformat()} 期间添加的条目")
-    
-    # 不使用 since 参数
-    url = f"{API_BASE_URL}/users/{ZOTERO_USER_ID}/items/top"
-    params = {
-        "format": "json",
-        "limit": 100,
-        "sort": "dateAdded",
-        "direction": "desc"
-    }
-    
-    try:
-        items = []
-        while url:
-            response = requests.get(url, params=params, headers=get_headers())
+    def __init__(self):
+        """初始化 Zotero 服务"""
+        # 从环境变量获取 Zotero API 配置
+        user_id = os.getenv("ZOTERO_USER_ID")
+        api_key = os.getenv("ZOTERO_API_KEY")
+        library_type = os.getenv("ZOTERO_LIBRARY_TYPE", "user")  # 默认为用户库
+        
+        # 检查配置完整性
+        if not user_id or not api_key:
+            raise ValueError("缺少 Zotero API 配置。请检查环境变量 ZOTERO_USER_ID 和 ZOTERO_API_KEY")
+        
+        # 初始化 Zotero API 客户端
+        self.zot = zotero.Zotero(user_id, library_type, api_key)
+        
+        # 获取存储临时文件的目录
+        self.temp_dir = os.getenv("TEMP_DIR", "/tmp")
+        os.makedirs(self.temp_dir, exist_ok=True)
+        
+        # Zotero 本地存储路径
+        self.zotero_storage_path = os.getenv("ZOTERO_STORAGE_PATH", "")
+        os.makedirs(self.zotero_storage_path, exist_ok=True)
+        
+        # 获取直接本地存储路径
+        self.zotero_local_path = os.getenv("ZOTERO_LOCAL_PATH", "")
+        if self.zotero_local_path and os.path.exists(self.zotero_local_path):
+            logger.info(f"使用 Zotero 本地路径：{self.zotero_local_path}")
+        else:
+            logger.warning(f"Zotero 本地路径不存在或未设置：{self.zotero_local_path}")
             
-            if response.status_code != 200:
-                logger.error(f"API 请求失败：{response.status_code} - {response.text}")
-                response.raise_for_status()
-            
-            batch_items = response.json()
-            
-            # 根据添加日期过滤
-            for item in batch_items:
-                try:
-                    date_str = item['data'].get('dateAdded', '')
-                    if not date_str:
-                        continue
-                        
-                    # 解析日期并确保它有时区信息
-                    date_added = parse(date_str)
-                    
-                    # 如果解析出的日期没有时区信息，则添加 UTC 时区
-                    if date_added.tzinfo is None:
-                        date_added = date_added.replace(tzinfo=pytz.UTC)
-                    
-                    # 现在可以安全地比较日期，因为两者都有时区信息
-                    if start_date <= date_added <= end_date:
-                        items.append(item)
-                        
-                except (KeyError, ValueError, TypeError) as e:
-                    logger.warning(f"解析条目日期时出错：{e}, 日期字符串：{date_str if 'date_str' in locals() else 'unknown'}")
-            
-            logger.info(f"已获取 {len(items)} 条符合日期条件的条目")
-            
-            # 处理分页
-            links = response.links if hasattr(response, 'links') else {}
-            next_url = links.get('next', {}).get('url')
-            if next_url:
-                url = next_url
-                params = None
-            else:
-                url = None
-                
-            # 避免过快请求
-            time.sleep(0.5)
+        # 添加常见的子目录名称列表，用于搜索
+        self.common_subdirs = ["pdfs", "attachments", "storage"]
+    
+    def get_all_collections(self) -> List[Dict]:
+        """
+        获取所有收藏集
         
-        # 获取子条目
-        for item in items[:]:
-            item_key = item.get('data', {}).get('key')
-            if item_key:
-                child_items = get_item_attachments(item_key)
-                # 将父条目信息添加到子条目中
-                for child in child_items:
-                    child['parentItem'] = item
-                    items.append(child)
-        
-        return items
-    
-    except Exception as e:
-        logger.error(f"获取 Zotero 条目时出错：{e}")
-        return []
-
-def get_recent_items(days=7, format="json"):
-    """
-    获取最近几天添加或修改的条目
-    
-    参数：
-    days (int): 最近几天的时间范围
-    format (str): 返回格式，默认为 JSON
-    
-    返回：
-    list: 条目列表
-    """
-    if not ZOTERO_API_KEY or not ZOTERO_USER_ID:
-        logger.error("未配置 Zotero API 密钥或用户 ID")
-        return []
-    
-    # 使用 UTC 时间避免时区问题
-    current_time = datetime.utcnow()
-    since_date = current_time - timedelta(days=days)
-    
-    # 检查日期是否有效
-    if since_date > current_time:
-        logger.error(f"计算的 since_date ({since_date.isoformat()}) 在当前时间之后，修正为当前时间减去 {days} 天")
-        since_date = current_time - timedelta(days=days)
-    
-    # 格式化为 ISO 8601 UTC 格式
-    since_timestamp = since_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-    
-    logger.info(f"获取自 {since_timestamp} 以来的条目（当前 UTC 时间：{current_time.strftime('%Y-%m-%dT%H:%M:%SZ')}）")
-    
-    # 构建 API 请求 URL
-    url = f"{API_BASE_URL}/users/{ZOTERO_USER_ID}/items"
-    params = {
-        "format": format,
-        "limit": 50,
-        "since": since_timestamp,
-        "sort": "dateAdded",
-        "direction": "desc"
-    }
-    
-    try:
-        # 显示完整请求详情以便调试
-        logger.debug(f"Zotero API 请求：{url}?{'&'.join(f'{k}={v}' for k, v in params.items())}")
-        
-        response = requests.get(url, params=params, headers=get_headers())
-        
-        # 记录请求信息用于调试
-        if response.status_code != 200:
-            logger.error(f"API 请求失败：{response.status_code} - {response.text}")
-            logger.error(f"请求 URL：{response.url}")
-            response.raise_for_status()
-        
-        items = response.json()
-        logger.info(f"从 Zotero 获取到 {len(items)} 条最近添加/修改的条目")
-        return items
-    
-    except Exception as e:
-        logger.error(f"获取 Zotero 条目时出错：{e}")
-        return []
-
-def get_item_attachments(item_key):
-    """
-    获取特定条目的附件列表
-    
-    参数：
-    item_key (str): 条目的唯一标识
-    
-    返回：
-    list: 附件列表
-    """
-    url = f"{API_BASE_URL}/users/{ZOTERO_USER_ID}/items/{item_key}/children"
-    params = {"format": "json"}
-    
-    try:
-        response = requests.get(url, params=params, headers=get_headers())
-        response.raise_for_status()
-        
-        attachments = response.json()
-        return attachments
-    
-    except Exception as e:
-        logger.error(f"获取条目 {item_key} 的附件时出错：{e}")
-        return []
-
-def get_pdf_attachments(days=7):
-    """
-    获取最近添加的 PDF 附件
-    
-    参数：
-    days (int): 最近几天的范围
-    
-    返回：
-    list: PDF 附件信息列表
-    """
-    # 使用新的函数获取条目
-    items = get_recent_items_by_date_range(days)
-    pdf_attachments = []
-    
-    # 直接检查所有条目是否为 PDF 附件
-    for item in items:
-        item_data = item.get('data', {})
-        item_type = item_data.get('itemType')
-        
-        # 如果是 PDF 附件，直接添加
-        if item_type == 'attachment' and item_data.get('contentType') == 'application/pdf':
-            pdf_attachments.append(item)
-    
-    logger.info(f"找到 {len(pdf_attachments)} 个 PDF 附件")
-    return pdf_attachments
-
-def download_attachment_file(attachment):
-    """
-    下载 PDF 附件文件
-    
-    参数：
-    attachment (dict): 附件信息
-    
-    返回：
-    tuple: (本地文件路径，文件名称，文献元数据)
-    """
-    # 提取文件信息
-    attachment_data = attachment.get('data', {})
-    key = attachment_data.get('key')
-    filename = attachment_data.get('filename', 'unknown.pdf')
-    
-    # 在下载前检查附件类型和链接模式
-    linkMode = attachment_data.get('linkMode')
-    
-    # 如果是链接附件（非存储附件），尝试获取直接 URL
-    if linkMode == 'linked_url' or linkMode == 'imported_url':
-        logger.warning(f"附件 {key} 是链接文件而非存储文件，尝试从原始 URL 下载")
+        返回：
+            List[Dict]: 收藏集列表
+        """
         try:
-            # 从附件 URL 字段获取链接
-            url = attachment_data.get('url')
-            if not url:
-                logger.error(f"附件 {key} 未提供 URL")
-                return None, filename, {}
+            collections = self.zot.collections()
+            logger.info(f"成功获取 {len(collections)} 个收藏集")
+            return collections
+        except Exception as e:
+            logger.error(f"获取收藏集时出错：{e}")
+            raise
+    
+    def format_collection_list_for_telegram(self) -> str:
+        """
+        格式化收藏集列表，供 Telegram 显示
+        
+        返回：
+            str: 格式化的收藏集列表文本
+        """
+        collections = self.get_all_collections()
+        
+        if not collections:
+            return "未找到收藏集"
+        
+        result = "📚 Zotero 收藏集列表：\n\n"
+        for coll in collections:
+            result += f"• {coll['data']['name']} (ID: `{coll['data']['key']}`)\n"
+        
+        result += "\n使用方法：\n"
+        result += "- 同步最新论文：`/sync_papers [收藏集 ID] [数量]`\n"
+        result += "- 同步指定天数内的论文：`/sync_days [收藏集 ID] [天数]`"
+        
+        return result
+    
+    def get_recent_items(self, collection_id: Optional[str] = None, 
+                          filter_type: str = "count", value: int = 5) -> List[Dict]:
+        """
+        获取最近的论文项目，支持按数量或天数筛选
+        
+        参数：
+            collection_id: 收藏集 ID，如果为 None 则获取所有收藏集
+            filter_type: 筛选类型，'count'表示按数量，'days'表示按天数
+            value: 要获取的数量或天数
             
-            # 下载链接文件
-            response = requests.get(url, stream=True, timeout=30)
-            if response.status_code == 200:
-                fd, temp_path = tempfile.mkstemp(suffix='.pdf')
-                os.close(fd)
-                
-                with open(temp_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                
-                logger.info(f"成功从原始 URL 下载文件：{filename} 到 {temp_path}")
-                
-                # 尝试获取父条目的元数据
-                parent_item = attachment.get('parentItem', {})
-                parent_data = parent_item.get('data', {}) if parent_item else {}
-                
-                # 如果有父条目，获取更完整的元数据
-                if parent_item and parent_data.get('key'):
-                    parent_key = parent_data.get('key')
-                    complete_metadata = get_item_metadata(parent_key)
-                    if complete_metadata:
-                        parent_data = complete_metadata
-                
-                # 构建元数据
-                metadata = {
-                    'title': parent_data.get('title', filename),
-                    'creators': parent_data.get('creators', []),
-                    'abstractNote': parent_data.get('abstractNote', ''),
-                    'publicationTitle': parent_data.get('publicationTitle', ''),
-                    'date': parent_data.get('date', ''),
-                    'DOI': parent_data.get('DOI', ''),
-                    'url': url,  # 使用原始 URL
-                    'tags': parent_data.get('tags', []),
-                    'zotero_key': parent_data.get('key', '') or attachment_data.get('key', ''),
-                    'itemType': parent_data.get('itemType', ''),
-                    'journal': parent_data.get('journalAbbreviation', ''),
-                    'volume': parent_data.get('volume', ''),
-                    'issue': parent_data.get('issue', ''),
-                    'pages': parent_data.get('pages', ''),
-                    'publisher': parent_data.get('publisher', '')
+        返回：
+            List[Dict]: 论文条目列表
+        """
+        try:
+            if filter_type == "count":
+                # 按数量获取最新论文
+                sort_params = {
+                    'sort': 'dateAdded',
+                    'direction': 'desc',
+                    'limit': value
                 }
                 
-                return temp_path, filename, metadata
+                # 根据是否提供收藏集 ID 选择获取方式
+                if collection_id:
+                    items = self.zot.collection_items(collection_id, **sort_params)
+                else:
+                    items = self.zot.items(**sort_params)
+                
+                # 过滤，只保留论文类型的条目
+                papers = [item for item in items if item['data'].get('itemType') in 
+                          ['journalArticle', 'preprint', 'book', 'conferencePaper']]
+                
+                logger.info(f"成功获取 {len(papers)} 篇最近添加的论文")
+                return papers
+                
+            elif filter_type == "days":
+                # 按天数范围获取论文
+                target_date = datetime.now() - timedelta(days=value)
+                target_date_str = target_date.strftime('%Y-%m-%d')
+                
+                query_params = {
+                    'sort': 'dateAdded',
+                    'direction': 'desc',
+                    'limit': 100  # 设置一个较大的限制，可能需要分页处理
+                }
+                
+                all_items = []
+                start = 0
+                
+                while True:
+                    # 根据是否提供收藏集 ID 选择获取方式
+                    if collection_id:
+                        items = self.zot.collection_items(collection_id, start=start, **query_params)
+                    else:
+                        items = self.zot.items(start=start, **query_params)
+                    
+                    if not items:
+                        break
+                        
+                    # 过滤项目类型和日期
+                    for item in items:
+                        if item['data'].get('itemType') in ['journalArticle', 'preprint', 'book', 'conferencePaper']:
+                            date_added = item['data'].get('dateAdded', '')
+                            if date_added and date_added.split('T')[0] >= target_date_str:
+                                all_items.append(item)
+                            elif date_added and date_added.split('T')[0] < target_date_str:
+                                # 由于已经按日期排序，如果找到早于目标日期的条目，可以停止查询
+                                return all_items
+                    
+                    # 增加起始索引以获取下一页结果
+                    start += len(items)
+                    
+                    # 避免过于频繁的 API 请求
+                    if start > 0:
+                        time.sleep(1)
+                
+                logger.info(f"成功获取 {len(all_items)} 篇最近 {value} 天内添加的论文")
+                return all_items
+            
             else:
-                logger.error(f"从原始 URL 下载附件 {key} 失败：{response.status_code}")
-                return None, filename, {}
+                raise ValueError(f"不支持的筛选类型：{filter_type}")
+                
         except Exception as e:
-            logger.error(f"尝试从原始 URL 下载附件 {key} 时出错：{e}")
-            return None, filename, {}
+            logger.error(f"获取最近论文时出错：{e}")
+            raise
     
-    # 链接文件模式检查
-    if linkMode not in ['imported_file', 'embedded_image', None]:
-        logger.error(f"附件 {key} 使用不支持的链接模式：{linkMode}")
-        return None, filename, {}
-    
-    # 尝试获取父条目的元数据
-    parent_item = attachment.get('parentItem', {})
-    parent_data = parent_item.get('data', {}) if parent_item else {}
-    
-    # 如果有父条目，获取更完整的元数据
-    if parent_item and parent_data.get('key'):
-        parent_key = parent_data.get('key')
-        complete_metadata = get_item_metadata(parent_key)
-        if complete_metadata:
-            parent_data = complete_metadata
-    
-    # 构建元数据
-    metadata = {
-        'title': parent_data.get('title', filename),
-        'creators': parent_data.get('creators', []),
-        'abstractNote': parent_data.get('abstractNote', ''),
-        'publicationTitle': parent_data.get('publicationTitle', ''),
-        'date': parent_data.get('date', ''),
-        'DOI': parent_data.get('DOI', ''),
-        'url': parent_data.get('url', ''),
-        'tags': parent_data.get('tags', []),
-        'zotero_key': parent_data.get('key', '') or attachment_data.get('key', ''),
-        'itemType': parent_data.get('itemType', ''),
-        'journal': parent_data.get('journalAbbreviation', ''),
-        'volume': parent_data.get('volume', ''),
-        'issue': parent_data.get('issue', ''),
-        'pages': parent_data.get('pages', ''),
-        'publisher': parent_data.get('publisher', '')
-    }
-    
-    # 构建下载 URL
-    url = f"{API_BASE_URL}/users/{ZOTERO_USER_ID}/items/{key}/file"
-    
-    try:
-        # 先检查附件是否可下载
-        check_response = requests.head(url, headers=get_headers())
-        if check_response.status_code != 200:
-            logger.error(f"附件 {key} 不可下载，状态码：{check_response.status_code}")
-            logger.error("这可能是因为：1) 文件不是存储在 Zotero 服务器上，2) API 密钥权限不足，或 3) 文件已被删除")
+    def extract_metadata(self, item: Dict) -> Dict:
+        """
+        从 Zotero 条目中提取元数据
+        
+        参数：
+            item: Zotero 条目数据
             
-            # 尝试获取其他下载方式
-            alt_url = attachment_data.get('url')
-            if alt_url:
-                logger.info(f"尝试从替代 URL 下载：{alt_url}")
-                try:
-                    alt_response = requests.get(alt_url, stream=True, timeout=30)
-                    if alt_response.status_code == 200:
-                        # 下载成功
-                        fd, temp_path = tempfile.mkstemp(suffix='.pdf')
-                        os.close(fd)
+        返回：
+            Dict: 包含所有提取元数据的字典
+        """
+        data = item['data']
+        
+        # 提取基本元数据
+        metadata = {
+            'title': data.get('title', '未知标题'),
+            'abstract': data.get('abstractNote', ''),
+            'doi': data.get('DOI', ''),
+            'url': data.get('url', ''),
+            'date_added': data.get('dateAdded', ''),
+            'item_type': data.get('itemType', ''),
+            'authors': [],
+            'publication': data.get('publicationTitle', ''),
+            'date': data.get('date', '')[:4] if data.get('date') else '',
+            'tags': [tag['tag'] for tag in data.get('tags', [])],
+            'zotero_key': item['key'],
+            'collections': data.get('collections', []),
+        }
+        
+        # 提取作者
+        creators = data.get('creators', [])
+        for creator in creators:
+            if creator.get('creatorType') == 'author':
+                name = []
+                if creator.get('firstName'):
+                    name.append(creator.get('firstName', ''))
+                if creator.get('lastName'):
+                    name.append(creator.get('lastName', ''))
+                full_name = ' '.join(name).strip()
+                if full_name:
+                    metadata['authors'].append(full_name)
+        
+        # 转换作者列表为字符串
+        metadata['authors_text'] = ', '.join(metadata['authors'])
+        
+        return metadata
+    
+    def get_pdf_attachment(self, item_key: str) -> Optional[str]:
+        """
+        获取论文的 PDF 附件
+        
+        参数：
+            item_key: Zotero 条目的 key
+            
+        返回：
+            Optional[str]: 下载的 PDF 文件路径，如果失败则返回 None
+        """
+        try:
+            logger.info(f"开始获取条目 {item_key} 的 PDF 附件")
+            # 获取附件
+            attachments = self.zot.children(item_key)
+            
+            # 如果没有附件，直接返回 None
+            if not attachments:
+                logger.info(f"条目 {item_key} 没有附件")
+                return None
+            
+            logger.info(f"条目 {item_key} 共找到 {len(attachments)} 个附件")
+                
+            # 查找 PDF 附件
+            pdf_attachment = None
+            filename = None
+            pdf_filename = None
+            
+            for attachment in attachments:
+                # 详细记录附件信息，便于调试
+                attachment_data = attachment.get('data', {})
+                content_type = attachment_data.get('contentType')
+                link_mode = attachment_data.get('linkMode')
+                
+                if content_type == 'application/pdf':
+                    pdf_attachment = attachment
+                    
+                    # 智能获取文件名 - 尝试多种可能的字段
+                    filename = attachment_data.get('filename')
+                    if not filename:
+                        # 尝试从路径获取
+                        path = attachment_data.get('path', '')
+                        if path:
+                            if path.startswith('file:///'):
+                                path = unquote(path.replace('file://', ''))
+                            filename = os.path.basename(path)
+                            pdf_filename = path  # 保存完整路径
                         
-                        with open(temp_path, 'wb') as f:
-                            for chunk in alt_response.iter_content(chunk_size=8192):
-                                f.write(chunk)
+                        # 尝试从 URL 获取
+                        if not filename and attachment_data.get('url'):
+                            url_path = urlparse(attachment_data.get('url', '')).path
+                            if url_path and url_path.endswith('.pdf'):
+                                filename = os.path.basename(url_path)
                         
-                        logger.info(f"成功从替代 URL 下载文件：{filename} 到 {temp_path}")
-                        return temp_path, filename, metadata
-                except Exception as alt_e:
-                    logger.error(f"从替代 URL 下载失败：{alt_e}")
+                        # 尝试从标题获取
+                        if not filename and attachment_data.get('title'):
+                            filename = attachment_data.get('title')
+                            if not filename.lower().endswith('.pdf'):
+                                filename += '.pdf'
+                    
+                    logger.info(f"找到 PDF 附件：{attachment['key']}, 链接模式：{link_mode}, 文件名：{filename or '未知'}")
+                    if pdf_filename:
+                        logger.info(f"附件完整路径：{pdf_filename}")
+                    logger.debug(f"附件完整数据：{attachment_data}")
+                    break
             
-            # 如果没有替代下载方式或替代下载失败，则尝试使用元数据中的 DOI 或 URL
-            if metadata.get('DOI'):
-                logger.info(f"提供 DOI 链接作为替代：{metadata.get('DOI')}")
-                metadata['url'] = f"https://doi.org/{metadata.get('DOI')}"
-            elif metadata.get('url'):
-                logger.info(f"使用元数据中的 URL 作为替代：{metadata.get('url')}")
+            # 如果没有找到 PDF 附件，返回 None
+            if not pdf_attachment:
+                logger.info(f"条目 {item_key} 没有 PDF 附件")
+                return None
             
-            # 返回空路径但保留元数据，这样即使无法下载文件也能保存元数据
-            return None, filename, metadata
-        
-        # 如果检查通过，发送请求获取文件
-        response = requests.get(url, headers=get_headers(), stream=True)
-        response.raise_for_status()
-        
-        # 创建临时文件
-        fd, temp_path = tempfile.mkstemp(suffix='.pdf')
-        os.close(fd)
-        
-        # 写入文件内容
-        with open(temp_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        logger.info(f"成功下载文件：{filename} 到 {temp_path}")
-        return temp_path, filename, metadata
+            # 准备输出文件路径
+            output_pdf_filename = f"{self.temp_dir}/{item_key}.pdf"
+            
+            # 如果有完整路径，直接尝试使用
+            if pdf_filename and os.path.exists(pdf_filename) and os.path.isfile(pdf_filename):
+                logger.info(f"尝试从完整路径获取 PDF: {pdf_filename}")
+                with open(pdf_filename, 'rb') as src, open(output_pdf_filename, 'wb') as dst:
+                    dst.write(src.read())
+                logger.info(f"成功从完整路径获取 PDF: {pdf_filename}")
+                return output_pdf_filename
+            
+            # 优先策略：如果有文件名，首先尝试从 ZOTERO_LOCAL_PATH 直接获取或进行广度优先搜索
+            if filename:
+                # 1. 先检查直接路径
+                direct_local_paths = [
+                    os.path.join(self.zotero_local_path, filename)
+                ]
+                
+                # 2. 检查常见子目录
+                for subdir in self.common_subdirs:
+                    direct_local_paths.append(os.path.join(self.zotero_local_path, subdir, filename))
+                
+                # 尝试直接路径
+                for path in direct_local_paths:
+                    logger.info(f"尝试从路径获取 PDF: {path}")
+                    if os.path.exists(path) and os.path.isfile(path):
+                        with open(path, 'rb') as src, open(output_pdf_filename, 'wb') as dst:
+                            dst.write(src.read())
+                        logger.info(f"成功从路径获取 PDF: {path}")
+                        return output_pdf_filename
+                
+                # 3. 进行广度优先搜索
+                found_path = self._find_file_bfs(self.zotero_local_path, filename)
+                if found_path:
+                    with open(found_path, 'rb') as src, open(output_pdf_filename, 'wb') as dst:
+                        dst.write(src.read())
+                    logger.info(f"通过广度优先搜索找到并复制 PDF: {found_path}")
+                    return output_pdf_filename
+            
+            # 获取附件信息
+            attachment_key = pdf_attachment['key']
+            attachment_data = pdf_attachment['data']
+            
+            # 如果前面没有从直接路径找到，尝试其他方法
+            # 尝试不同的下载方法
+            download_methods = [
+                self._get_from_direct_local_path,  # 先尝试从存储目录直接获取
+                self._copy_from_local_path,
+                self._download_from_original_url
+            ]
+            
+            # 链接附件优先尝试从原始 URL 下载
+            link_mode = attachment_data.get('linkMode')
+            if link_mode in ['linked_url', 'imported_url']:
+                url = attachment_data.get('url')
+                if url:
+                    logger.info(f"尝试从链接 URL 下载 PDF: {url[:60]}...")
+                    if self._download_from_url(url, output_pdf_filename):
+                        return output_pdf_filename
+            
+            # 尝试所有下载方法
+            for method in download_methods:
+                method_name = method.__name__
+                logger.info(f"尝试使用 {method_name} 方法获取 PDF")
+                
+                # 对于直接获取方法，传递文件名和输出路径
+                if method == self._get_from_direct_local_path:
+                    if filename and method(filename, output_pdf_filename):
+                        return output_pdf_filename
+                # 其他方法使用原来的参数
+                elif method(pdf_attachment, output_pdf_filename):
+                    return output_pdf_filename
+                    
+            logger.warning(f"无法获取条目 {item_key} 的 PDF 附件，所有下载方法均失败")
+            return None
+                
+        except Exception as e:
+            logger.error(f"获取 PDF 附件时出错：{e}")
+            return None
     
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            logger.error(f"文件 {key} 未找到，这可能是因为：1) 该文件是链接附件而非存储附件，2) API 密钥权限不足")
-        else:
-            logger.error(f"下载附件 {key} 时出错：{e}")
+    def _find_file_bfs(self, root_dir: str, target_filename: str, max_depth: int = 4) -> Optional[str]:
+        """
+        使用广度优先搜索在目录中查找文件，增强对特殊字符的处理
         
-        # 尝试直接从 PDF URL 下载（如果有）
-        pdf_url = attachment_data.get('url')
-        if pdf_url and pdf_url.lower().endswith('.pdf'):
+        参数：
+            root_dir: 起始目录
+            target_filename: 要查找的文件名
+            max_depth: 最大搜索深度，防止搜索过大的目录树
+            
+        返回：
+            Optional[str]: 找到的文件路径，如果未找到则返回 None
+        """
+        if not os.path.exists(root_dir) or not os.path.isdir(root_dir):
+            logger.warning(f"搜索根目录不存在或不是目录：{root_dir}")
+            return None
+            
+        from collections import deque
+        
+        # 规范化目标文件名以处理 Unicode 和特殊字符
+        target_filename = self._normalize_filename(target_filename)
+        
+        # 准备搜索队列，每个元素是 (路径，当前深度)
+        queue = deque([(root_dir, 0)])
+        visited = set()
+        
+        target_lower = target_filename.lower()
+        logger.info(f"开始在 {root_dir} 中搜索文件：{target_filename}")
+        
+        # 获取文件名和扩展名
+        target_base, target_ext = os.path.splitext(target_lower)
+        
+        # 创建简单的匹配模式，避免复杂的正则表达式
+        # 使用单词边界和不区分大小写的匹配
+        try:
+            # 替换常见的特殊字符为通配符
+            simple_base = target_base.replace(' ', '.{0,3}')  # 允许 0-3 个任意字符替代空格
+            simple_base = re.sub(r'[,\.\-_]', '.{0,1}', simple_base)  # 允许 0-1 个任意字符替代分隔符
+            
+            # 创建安全的正则表达式模式
+            pattern = re.compile(f".*{re.escape(simple_base)}.*{re.escape(target_ext)}$", re.IGNORECASE)
+        except Exception as e:
+            logger.warning(f"创建搜索模式时出错：{e}")
+            # 如果正则表达式创建失败，使用简单的子字符串匹配
+            pattern = None
+        
+        while queue:
+            current_dir, depth = queue.popleft()
+            
+            if current_dir in visited or depth > max_depth:
+                continue
+                
+            visited.add(current_dir)
+            
             try:
-                logger.info(f"尝试直接从 URL 下载 PDF：{pdf_url}")
-                direct_response = requests.get(pdf_url, stream=True, timeout=30)
-                if direct_response.status_code == 200:
-                    fd, temp_path = tempfile.mkstemp(suffix='.pdf')
-                    os.close(fd)
+                for item in os.listdir(current_dir):
+                    full_path = os.path.join(current_dir, item)
                     
-                    with open(temp_path, 'wb') as f:
-                        for chunk in direct_response.iter_content(chunk_size=8192):
-                            f.write(chunk)
+                    # 检查是否匹配目标文件（多种匹配策略）
+                    if os.path.isfile(full_path):
+                        normalized_item = self._normalize_filename(item)
+                        item_lower = normalized_item.lower()
+                        
+                        # 策略 1: 精确匹配（不区分大小写）
+                        if item_lower == target_lower:
+                            logger.info(f"找到精确匹配文件：{full_path}")
+                            return full_path
+                        
+                        # 策略 2: 扩展名匹配 + 基础名包含
+                        item_base, item_ext = os.path.splitext(item_lower)
+                        if item_ext.lower() == target_ext.lower() and target_base in item_base:
+                            logger.info(f"找到基础名包含匹配文件：{full_path}")
+                            return full_path
+                        
+                        # 策略 3: 模式匹配（如果正则表达式可用）
+                        if pattern and pattern.match(item_lower):
+                            logger.info(f"找到模式匹配文件：{full_path}")
+                            return full_path
                     
-                    logger.info(f"成功从直接 URL 下载文件：{filename} 到 {temp_path}")
-                    metadata['url'] = pdf_url  # 更新 URL
-                    return temp_path, filename, metadata
-            except Exception as direct_e:
-                logger.error(f"直接下载失败：{direct_e}")
+                    # 将子目录添加到队列
+                    if os.path.isdir(full_path) and depth < max_depth:
+                        queue.append((full_path, depth + 1))
+            except PermissionError:
+                logger.warning(f"无权访问目录：{current_dir}")
+            except Exception as e:
+                logger.warning(f"搜索目录 {current_dir} 时出错：{e}")
         
-        return None, filename, metadata
-    
-    except Exception as e:
-        logger.error(f"下载附件 {key} 时出错：{e}")
-        return None, filename, metadata
-
-def get_item_metadata(item_key):
-    """
-    获取条目的详细元数据
-    
-    参数：
-    item_key (str): 条目的唯一标识
-    
-    返回：
-    dict: 条目元数据
-    """
-    url = f"{API_BASE_URL}/users/{ZOTERO_USER_ID}/items/{item_key}"
-    params = {"format": "json"}
-    
-    try:
-        response = requests.get(url, params=params, headers=get_headers())
-        response.raise_for_status()
-        
-        item_data = response.json()
-        return item_data.get('data', {})
-    
-    except Exception as e:
-        logger.error(f"获取条目 {item_key} 的元数据时出错：{e}")
-        return {}
-
-def sync_recent_pdfs(days=7, collection_id=None):
-    """
-    同步最近添加的 PDF 文件
-    
-    参数：
-    days (int): 最近几天的范围
-    collection_id (str, optional): 特定集合的 ID，如果提供则只同步该集合
-    
-    返回：
-    list: 处理的文件信息列表 [(路径，文件名，元数据)]
-    """
-    # 确保 days 参数有效
-    if not isinstance(days, int) or days <= 0:
-        logger.warning(f"无效的 days 参数：{days}，使用默认值 7")
-        days = 7
-    
-    # 如果指定了集合 ID，先验证集合是否存在
-    if collection_id:
-        if collection_exists(collection_id):
-            logger.info(f"同步集合 {collection_id} 中最近 {days} 天添加的 PDF")
-            return sync_collection_pdfs(collection_id, days)
-        else:
-            logger.error(f"集合 {collection_id} 不存在或无法访问")
-            return []
-    
-    # 否则，使用默认文件夹 ID（如果配置了的话）
-    from config import ZOTERO_FOLDER_ID
-    if ZOTERO_FOLDER_ID:
-        if collection_exists(ZOTERO_FOLDER_ID):
-            logger.info(f"使用默认集合 {ZOTERO_FOLDER_ID} 同步最近 {days} 天添加的 PDF")
-            return sync_collection_pdfs(ZOTERO_FOLDER_ID, days)
-        else:
-            logger.error(f"默认集合 {ZOTERO_FOLDER_ID} 不存在或无法访问")
-    
-    # 如果没有有效的集合 ID，同步所有最近的 PDF
-    logger.info(f"同步所有最近 {days} 天添加的 PDF")
-    pdf_attachments = get_pdf_attachments(days)
-    
-    # 筛选重复的 PDF (基于文件名)
-    seen_filenames = set()
-    unique_attachments = []
-    
-    for attachment in pdf_attachments:
-        filename = attachment.get('data', {}).get('filename', '')
-        if filename and filename not in seen_filenames:
-            seen_filenames.add(filename)
-            unique_attachments.append(attachment)
-    
-    # 下载 PDF 文件
-    results = []
-    for attachment in unique_attachments:
-        pdf_path, filename, metadata = download_attachment_file(attachment)
-        # 即使 pdf_path 为 None，也将元数据添加到结果中
-        if pdf_path or metadata:
-            results.append((pdf_path, filename, metadata))
-            # 避免请求过于频繁
-            time.sleep(1)
-    
-    logger.info(f"成功处理 {len(results)} 个条目")
-    return results
-
-def extract_zotero_pdf_url(url):
-    """
-    从 Zotero PDF URL 中提取条目 ID
-    例如：zotero://select/library/items/A1B2C3D4
-    
-    参数：
-    url (str): Zotero URL
-    
-    返回：
-    str: 条目 ID，如果无法解析则返回 None
-    """
-    if not url or not url.startswith('zotero://'):
+        logger.info(f"未找到文件：{target_filename}")
         return None
     
-    parsed = urlparse(url)
-    path = unquote(parsed.path)
-    
-    # 尝试提取 ID
-    parts = path.split('/')
-    if len(parts) >= 4 and parts[-2] == 'items':
-        return parts[-1]
-    
-    return None
-
-def get_collections():
-    """
-    获取所有 Zotero 集合（文件夹）信息
-    
-    返回：
-    list: 集合信息列表
-    """
-    url = f"{API_BASE_URL}/users/{ZOTERO_USER_ID}/collections"
-    params = {"format": "json"}
-    
-    try:
-        response = requests.get(url, params=params, headers=get_headers())
-        response.raise_for_status()
+    def _normalize_filename(self, filename: str) -> str:
+        """
+        规范化文件名，处理 Unicode 字符和各种空格形式
         
-        collections = response.json()
-        logger.info(f"获取到 {len(collections)} 个 Zotero 集合")
-        return collections
-    
-    except Exception as e:
-        logger.error(f"获取 Zotero 集合时出错：{e}")
-        return []
-
-def get_collection_items(collection_id, days=7):
-    """
-    获取特定集合中的最近添加的条目
-    
-    参数：
-    collection_id (str): 集合 ID
-    days (int): 最近几天的时间范围
-    
-    返回：
-    list: 条目列表
-    """
-    # 先检查集合是否存在
-    if not collection_exists(collection_id):
-        logger.error(f"集合 {collection_id} 不存在或无法访问")
-        return []
-    
-    # 修复时间计算问题 - 确保使用正确的时区和有效的过去日期
-    # 使用 UTC 时间以避免时区问题
-    current_time = datetime.utcnow()
-    since_date = current_time - timedelta(days=days)
-    
-    # 检查日期是否有效（不在未来）
-    if since_date > current_time:
-        logger.error(f"计算的 since_date ({since_date.isoformat()}) 在当前时间之后，使用当前时间减去 {days} 天")
-        since_date = current_time - timedelta(days=days)
-    
-    # 格式化为 ISO 8601 UTC 格式
-    since_timestamp = since_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-    
-    logger.info(f"获取自 {since_timestamp} 以来的集合 {collection_id} 条目（当前 UTC 时间：{current_time.strftime('%Y-%m-%dT%H:%M:%SZ')}）")
-    
-    # 构建 API 请求 URL
-    url = f"{API_BASE_URL}/users/{ZOTERO_USER_ID}/collections/{collection_id}/items"
-    params = {
-        "format": "json",
-        "limit": 50,
-        "since": since_timestamp,
-        "sort": "dateAdded",
-        "direction": "desc"
-    }
-    
-    try:
-        # 显示完整请求详情以便调试
-        request_url = f"{url}?{'&'.join(f'{k}={v}' for k, v in params.items())}"
-        logger.debug(f"Zotero API 请求：{request_url}")
+        参数：
+            filename: 原始文件名
+            
+        返回：
+            str: 规范化后的文件名
+        """
+        if not filename:
+            return ""
         
-        # 将 params 传递给 requests，而不是手动构建 URL，以确保正确的 URL 编码
-        response = requests.get(url, params=params, headers=get_headers())
+        # 解码 URL 编码的文件名
+        if '%' in filename:
+            try:
+                filename = unquote(filename)
+            except:
+                pass
+                
+        # Unicode 规范化
+        filename = unicodedata.normalize('NFC', filename)
         
-        # 如果出现错误，记录详细的请求信息
-        if response.status_code != 200:
-            logger.error(f"API 请求失败：{response.status_code} - {response.text}")
-            logger.error(f"请求 URL：{response.url}")
-            logger.error(f"请求头：{get_headers()}")
-            response.raise_for_status()
+        # 替换连续空格为单个空格
+        filename = re.sub(r'\s+', ' ', filename)
         
-        items = response.json()
-        logger.info(f"从集合 {collection_id} 获取到 {len(items)} 条最近添加的条目")
-        return items
+        # 清理文件名两端的空白
+        filename = filename.strip()
+        
+        return filename
     
-    except requests.exceptions.HTTPError as e:
-        # 提供更详细的错误信息
-        error_msg = f"获取集合 {collection_id} 条目时出错：{e}"
-        if hasattr(e, 'response') and e.response:
-            error_msg += f"\n响应状态码：{e.response.status_code}"
-            error_msg += f"\n响应内容：{e.response.text[:500]}"  # 限制响应内容长度
-        logger.error(error_msg)
-        return []
-    except Exception as e:
-        logger.error(f"获取集合 {collection_id} 条目时出错：{e}")
-        return []
-
-def collection_exists(collection_id):
-    """
-    检查集合是否存在且可访问
+    def _get_from_direct_local_path(self, filename: str, output_path: str) -> bool:
+        """
+        从本地 Zotero 存储目录直接获取指定名称的 PDF 文件，
+        增强处理特殊字符和空格的能力
+        
+        参数：
+            filename: PDF 文件名
+            output_path: 输出文件路径
+            
+        返回：
+            bool: 如果成功则返回 True，否则返回 False
+        """
+        try:
+            if not filename:
+                logger.warning("没有提供文件名，无法从本地路径获取文件")
+                return False
+                
+            # 规范化文件名
+            normalized_filename = self._normalize_filename(filename)
+            
+            # 构建可能的文件路径
+            potential_paths = []
+                
+            # 首先尝试从 ZOTERO_LOCAL_PATH 获取
+            if self.zotero_local_path:
+                # 直接路径
+                potential_paths.append(os.path.join(self.zotero_local_path, normalized_filename))
+                potential_paths.append(os.path.join(self.zotero_local_path, filename))  # 原始文件名
+                
+                # 常见子目录
+                for subdir in self.common_subdirs:
+                    potential_paths.append(os.path.join(self.zotero_local_path, subdir, normalized_filename))
+                    potential_paths.append(os.path.join(self.zotero_local_path, subdir, filename))
+                    
+            # 然后尝试从 zotero_storage_path 获取
+            if self.zotero_storage_path:
+                # 直接路径
+                potential_paths.append(os.path.join(self.zotero_storage_path, normalized_filename))
+                potential_paths.append(os.path.join(self.zotero_storage_path, filename))
+                
+                # 常见子目录
+                for subdir in self.common_subdirs:
+                    potential_paths.append(os.path.join(self.zotero_storage_path, subdir, normalized_filename))
+                    potential_paths.append(os.path.join(self.zotero_storage_path, subdir, filename))
+            
+            # 尝试所有可能的路径
+            for path in set(potential_paths):  # 使用 set 去重
+                logger.info(f"尝试从路径获取文件：{path}")
+                if os.path.exists(path) and os.path.isfile(path):
+                    # 复制文件到输出路径
+                    with open(path, 'rb') as src, open(output_path, 'wb') as dst:
+                        dst.write(src.read())
+                    logger.info(f"成功从路径获取 PDF 文件：{path}")
+                    return True
+            
+            # 如果直接路径都失败了，尝试进行文件搜索
+            for base_path in [self.zotero_local_path, self.zotero_storage_path]:
+                if base_path:
+                    found_path = self._find_file_bfs(base_path, filename)
+                    if found_path:
+                        with open(found_path, 'rb') as src, open(output_path, 'wb') as dst:
+                            dst.write(src.read())
+                        logger.info(f"通过搜索找到并复制 PDF 文件：{found_path}")
+                        return True
+            
+            logger.info(f"在本地路径中未找到文件：{filename}")
+            return False
+        except Exception as e:
+            logger.warning(f"从直接路径获取 PDF 失败：{e}")
+            return False
     
-    参数：
-    collection_id (str): 集合 ID
-    
-    返回：
-    bool: 如果集合存在且可访问则返回 True
-    """
-    # 如果集合 ID 为空，返回 False
-    if not collection_id or not collection_id.strip():
+    def _download_via_api(self, attachment, pdf_filename):
+        """通过 API 下载 PDF"""
+        try:
+            pdf_content = self.zot.file(attachment['key'])
+            if pdf_content:
+                with open(pdf_filename, 'wb') as f:
+                    f.write(pdf_content)
+                logger.info(f"成功通过 API 下载 PDF 到：{pdf_filename}")
+                return True
+        except Exception as e:
+            logger.warning(f"通过 API 下载 PDF 失败：{e}")
         return False
     
-    url = f"{API_BASE_URL}/users/{ZOTERO_USER_ID}/collections/{collection_id}"
-    
-    try:
-        response = requests.get(url, headers=get_headers())
-        return response.status_code == 200
-    except:
+    def _download_via_link(self, attachment, pdf_filename):
+        """通过附件链接下载 PDF"""
+        try:
+            links = attachment.get('links', {})
+            if links and 'enclosure' in links:
+                download_url = links['enclosure']['href']
+                
+                # 添加 API 密钥到 URL
+                parsed_url = urlparse(download_url)
+                if not parsed_url.query:
+                    download_url += f"?key={self.zot.api_key}"
+                else:
+                    download_url += f"&key={self.zot.api_key}"
+                
+                return self._download_from_url(download_url, pdf_filename)
+        except Exception as e:
+            logger.warning(f"通过下载链接获取 PDF 失败：{e}")
         return False
-
-def get_collection_items_by_date_range(collection_id, days=7):
-    """
-    使用替代方法获取特定集合中的最近添加的条目
     
-    参数：
-    collection_id (str): 集合 ID
-    days (int): 最近几天的时间范围
-    
-    返回：
-    list: 条目列表
-    """
-    # 检查集合是否存在
-    if not collection_exists(collection_id):
-        logger.error(f"集合 {collection_id} 不存在或无法访问")
-        return []
-    
-    # 计算时间范围 - 确保所有日期都是 aware datetime (带有时区信息)
-    end_date = datetime.now(pytz.UTC)  # 使用带时区的 datetime
-    start_date = end_date - timedelta(days=days)
-    
-    logger.info(f"获取 {start_date.isoformat()} 到 {end_date.isoformat()} 期间添加的条目")
-    
-    # 不使用 since 参数，而是通过客户端过滤
-    url = f"{API_BASE_URL}/users/{ZOTERO_USER_ID}/collections/{collection_id}/items/top"
-    params = {
-        "format": "json",
-        "limit": 100,  # 增加限制以获取更多条目
-        "sort": "dateAdded",
-        "direction": "desc"
-    }
-    
-    try:
-        items = []
-        while url:
-            logger.debug(f"请求 URL: {url}")
-            response = requests.get(url, params=params, headers=get_headers())
+    def _copy_from_local_path(self, attachment, pdf_filename):
+        """从本地路径复制 PDF"""
+        try:
+            # 首先尝试使用附件中提供的路径
+            path = attachment['data'].get('path', '')
+            if path:
+                # 本地文件路径可能是 URI 格式，需要解码
+                if path.startswith('file:///'):
+                    path = unquote(path.replace('file://', ''))
+                
+                if os.path.exists(path) and os.path.isfile(path):
+                    with open(path, 'rb') as src, open(pdf_filename, 'wb') as dst:
+                        dst.write(src.read())
+                    logger.info(f"成功从本地路径复制 PDF 到：{pdf_filename}")
+                    return True
             
-            if response.status_code != 200:
-                logger.error(f"API 请求失败：{response.status_code} - {response.text}")
-                logger.error(f"请求 URL：{response.url}")
-                response.raise_for_status()
+            # 如果上述方法失败，尝试使用 Zotero 存储路径
+            local_path = self._find_pdf_in_zotero_storage(attachment)
+            if local_path and os.path.exists(local_path) and os.path.isfile(local_path):
+                with open(local_path, 'rb') as src, open(pdf_filename, 'wb') as dst:
+                    dst.write(src.read())
+                logger.info(f"成功从 Zotero 存储路径复制 PDF 到：{pdf_filename}")
+                return True
+                
+        except Exception as e:
+            logger.warning(f"从本地路径获取 PDF 失败：{e}")
+        return False
+    
+    def _find_pdf_in_zotero_storage(self, attachment):
+        """
+        在 Zotero 本地存储中查找 PDF 文件
+        
+        参数：
+            attachment: Zotero 附件信息
             
-            # 提取数据
-            batch_items = response.json()
+        返回：
+            str: PDF 文件的本地路径，如果找不到则返回 None
+        """
+        try:
+            # 获取附件的 key 和文件名
+            attachment_key = attachment['key']
+            filename = attachment['data'].get('filename', '')
             
-            # 根据添加日期过滤
-            for item in batch_items:
+            # 尝试从 key 构建存储路径
+            # Zotero 通常使用 {key} 或 {key}/{filename} 的路径格式
+            potential_paths = [
+                os.path.join(self.zotero_storage_path, attachment_key + '.pdf'),
+                os.path.join(self.zotero_storage_path, attachment_key, filename),
+                os.path.join(self.zotero_storage_path, attachment_key),
+            ]
+            
+            # 如果文件名不是以.pdf 结尾，添加一个带.pdf 后缀的路径
+            if filename and not filename.lower().endswith('.pdf'):
+                potential_paths.append(os.path.join(self.zotero_storage_path, attachment_key, filename + '.pdf'))
+            
+            # 尝试直接使用文件名
+            if filename:
+                potential_paths.append(os.path.join(self.zotero_storage_path, filename))
+            
+            # 检查每个可能的路径
+            for path in potential_paths:
+                if os.path.exists(path) and os.path.isfile(path):
+                    return path
+            
+            # 如果上述方法都失败，尝试在目录中查找匹配的文件
+            if os.path.exists(os.path.join(self.zotero_storage_path, attachment_key)) and \
+               os.path.isdir(os.path.join(self.zotero_storage_path, attachment_key)):
+                directory = os.path.join(self.zotero_storage_path, attachment_key)
+                files = os.listdir(directory)
+                pdf_files = [f for f in files if f.lower().endswith('.pdf')]
+                if pdf_files:
+                    return os.path.join(directory, pdf_files[0])
+            
+            logger.warning(f"在 Zotero 存储中找不到附件 {attachment_key} 的 PDF 文件")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"在 Zotero 存储中查找 PDF 文件失败：{e}")
+            return None
+    
+    def _download_from_original_url(self, attachment, pdf_filename):
+        """从原始 URL 下载 PDF"""
+        try:
+            url = attachment['data'].get('url')
+            if url and (url.lower().endswith('.pdf') or 'pdf' in url.lower()):
+                return self._download_from_url(url, pdf_filename)
+        except Exception as e:
+            logger.warning(f"从原始 URL 下载 PDF 失败：{e}")
+        return False
+    
+    def _download_from_url(self, url, pdf_filename):
+        """从 URL 下载文件到指定路径"""
+        try:
+            logger.debug(f"尝试从 URL 下载文件：{url[:60]}...")
+            response = requests.get(url, stream=True, timeout=30)
+            if response.status_code == 200:
+                with open(pdf_filename, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                logger.info(f"成功从 URL 下载文件到：{pdf_filename}")
+                return True
+            logger.warning(f"从 URL 下载文件失败，状态码：{response.status_code}")
+        except Exception as e:
+            logger.warning(f"从 URL 下载文件失败：{e}")
+        return False
+    
+    def sync_items_to_notion(self, items: List[Dict]) -> Tuple[int, int, List[str]]:
+        """
+        将 Zotero 条目同步到 Notion，增加了通过 ZoteroID 匹配的功能
+        
+        参数：
+            items: Zotero 条目列表
+            
+        返回：
+            Tuple[int, int, List[str]]: 
+                - 成功同步的条目数
+                - 跳过的条目数（已存在）
+                - 错误信息列表
+        """
+        success_count = 0
+        skip_count = 0
+        errors = []
+        
+        # 从 Notion 获取已存在的 DOI 和 Zotero ID 列表，避免重复添加
+        existing_dois = set()
+        existing_zotero_ids = set()
+        
+        try:
+            # 获取已存在的 DOI
+            existing_dois = notion_service.get_existing_dois()
+            
+            # 获取已存在的 Zotero ID
+            existing_zotero_ids = notion_service.get_existing_zotero_ids()
+            
+            logger.info(f"已从 Notion 获取现有记录：{len(existing_dois)} 个 DOI，{len(existing_zotero_ids)} 个 Zotero ID")
+        except Exception as e:
+            logger.warning(f"获取已存在的条目信息失败：{e}")
+        
+        for item in items:
+            try:
+                # 提取元数据
+                metadata = self.extract_metadata(item)
+                zotero_key = item['key']
+                
+                # 首先检查 DOI 是否已存在
+                if metadata['doi'] and metadata['doi'].lower() in existing_dois:
+                    logger.info(f"论文 DOI 已存在于 Notion，跳过：{metadata['title']} (DOI: {metadata['doi']})")
+                    skip_count += 1
+                    continue
+                
+                # 然后检查 Zotero ID 是否已存在
+                if zotero_key in existing_zotero_ids:
+                    logger.info(f"论文 Zotero ID 已存在于 Notion，跳过：{metadata['title']} (ID: {zotero_key})")
+                    skip_count += 1
+                    continue
+                
+                # 尝试获取 PDF
+                pdf_path = None
                 try:
-                    date_str = item['data'].get('dateAdded', '')
-                    if not date_str:
-                        continue
-                        
-                    # 解析日期并确保它有时区信息
-                    date_added = parse(date_str)
+                    pdf_path = self.get_pdf_attachment(item['key'])
+                except Exception as e:
+                    logger.warning(f"获取 PDF 失败：{e}")
+                
+                # 使用 Gemini 分析论文（如果有 PDF）
+                gemini_analysis = {}
+                if pdf_path:
+                    try:
+                        gemini_analysis = gemini_service.analyze_pdf_content(pdf_path)
+                    except Exception as e:
+                        logger.warning(f"Gemini 分析失败：{e}")
+                        gemini_analysis = {
+                            'brief_summary': '无法分析论文',
+                            'keywords': [],
+                            'insight': '分析失败',
+                            'details': '解析 PDF 失败'
+                        }
                     
-                    # 如果解析出的日期没有时区信息，则添加 UTC 时区
-                    if date_added.tzinfo is None:
-                        date_added = date_added.replace(tzinfo=pytz.UTC)
-                    
-                    # 现在可以安全地比较日期，因为两者都有时区信息
-                    if start_date <= date_added <= end_date:
-                        items.append(item)
-                        
-                except (KeyError, ValueError, TypeError) as e:
-                    logger.warning(f"解析条目日期时出错：{e}, 日期字符串：{date_str if 'date_str' in locals() else 'unknown'}")
-            
-            logger.info(f"已获取 {len(items)} 条符合日期条件的条目")
-            
-            # 处理分页 - 检查是否有下一页
-            links = response.links if hasattr(response, 'links') else {}
-            next_url = links.get('next', {}).get('url')
-            if next_url:
-                url = next_url
-                params = None  # 因为 next_url 已经包含了所有参数
-            else:
-                url = None
-            
-            # 避免过快请求
-            time.sleep(0.5)
+                    # 删除临时 PDF 文件
+                    try:
+                        os.remove(pdf_path)
+                    except:
+                        pass
+                
+                # 合并元数据和 Gemini 分析结果
+                page_data = {**metadata}
+                if gemini_analysis:
+                    page_data.update({
+                        'summary': gemini_analysis.get('brief_summary', ''),
+                        'keywords': gemini_analysis.get('keywords', []),
+                        'insights': gemini_analysis.get('insight', '')
+                    })
+                
+                # 创建 Notion 页面
+                page_id = notion_service.add_to_papers_database(
+                    title=metadata['title'],
+                    analysis=gemini_analysis,
+                    created_at=datetime.now(),
+                    metadata=metadata,
+                    zotero_id=item['key']
+                )
+                
+                logger.info(f"成功将论文同步到 Notion: {metadata['title']}")
+                success_count += 1
+                
+                # 更新 DOI 和 Zotero ID 集合
+                if metadata['doi']:
+                    existing_dois.add(metadata['doi'].lower())
+                existing_zotero_ids.add(zotero_key)
+                
+                # 避免过于频繁的 API 请求
+                time.sleep(1)
+                
+            except Exception as e:
+                error_msg = f"同步论文时出错 ({item.get('data', {}).get('title', '未知标题')}): {str(e)}"
+                logger.error(error_msg)
+                errors.append(error_msg)
         
-        # 获取子条目的 PDF 附件
-        for item in items[:]:
-            item_key = item.get('data', {}).get('key')
-            if item_key:
-                child_items = get_item_attachments(item_key)
-                # 将父条目信息添加到子条目中
-                for child in child_items:
-                    child['parentItem'] = item
-                    items.append(child)
-        
-        return items
-    
-    except Exception as e:
-        logger.error(f"获取集合 {collection_id} 条目时出错：{e}")
-        return []
+        return success_count, skip_count, errors
 
-def get_collection_pdf_attachments(collection_id, days=7):
+def get_zotero_service() -> ZoteroService:
     """
-    获取特定集合中最近添加的 PDF 附件
-    
-    参数：
-    collection_id (str): 集合 ID
-    days (int): 最近几天的范围
+    获取 ZoteroService 的单例实例
     
     返回：
-    list: PDF 附件信息列表
+        ZoteroService: 服务实例
     """
-    # 使用新的函数获取条目
-    items = get_collection_items_by_date_range(collection_id, days)
-    pdf_attachments = []
-    
-    # 直接检查所有条目是否为 PDF 附件
-    for item in items:
-        item_data = item.get('data', {})
-        item_type = item_data.get('itemType')
-        
-        # 如果是 PDF 附件，直接添加
-        if item_type == 'attachment' and item_data.get('contentType') == 'application/pdf':
-            pdf_attachments.append(item)
-    
-    logger.info(f"在集合 {collection_id} 中找到 {len(pdf_attachments)} 个 PDF 附件")
-    return pdf_attachments
+    global _zotero_service_instance
+    if (_zotero_service_instance is None):
+        _zotero_service_instance = ZoteroService()
+    return _zotero_service_instance
 
-def sync_collection_pdfs(collection_id, days=7):
+def format_sync_result(success_count: int, skip_count: int, total_count: int, errors: List[str]) -> str:
     """
-    同步特定集合中最近添加的 PDF 文件
+    格式化同步结果消息
     
     参数：
-    collection_id (str): 集合 ID
-    days (int): 最近几天的范围
-    
+        success_count: 成功同步的条目数
+        skip_count: 跳过的条目数（已存在）
+        total_count: 总共处理的条目数
+        errors: 错误信息列表
+        
     返回：
-    list: 处理的文件信息列表 [(路径，文件名，元数据)]
+        str: 格式化的结果消息
     """
-    pdf_attachments = get_collection_pdf_attachments(collection_id, days)
+    result = f"✅ 同步完成！\n\n"
+    result += f"• 成功同步：{success_count} 篇\n"
+    result += f"• 已存在跳过：{skip_count} 篇\n"
+    result += f"• 总计论文：{total_count} 篇\n"
     
-    # 筛选重复的 PDF (基于文件名)
-    seen_filenames = set()
-    unique_attachments = []
+    if errors:
+        result += f"\n⚠️ 同步过程中遇到 {len(errors)} 个错误:\n"
+        for i, error in enumerate(errors[:5], 1):  # 最多显示 5 个错误
+            result += f"{i}. {error}\n"
+        if len(errors) > 5:
+            result += f"... 以及其他 {len(errors) - 5} 个错误"
     
-    for attachment in pdf_attachments:
-        filename = attachment.get('data', {}).get('filename', '')
-        if filename and filename not in seen_filenames:
-            seen_filenames.add(filename)
-            unique_attachments.append(attachment)
+    return result
+
+def sync_papers_to_notion(collection_id: Optional[str] = None, 
+                           filter_type: str = "count", value: int = 5) -> str:
+    """
+    将 Zotero 论文同步到 Notion
     
-    # 下载 PDF 文件
-    results = []
-    for attachment in unique_attachments:
-        pdf_path, filename, metadata = download_attachment_file(attachment)
-        # 即使 pdf_path 为 None，也将元数据添加到结果中
-        # 这样即使无法下载文件，也能将元数据添加到 Notion
-        if pdf_path or metadata:
-            results.append((pdf_path, filename, metadata))
-            # 避免请求过于频繁
-            time.sleep(1)
+    参数：
+        collection_id: 收藏集 ID，如果为 None 则获取所有收藏集
+        filter_type: 筛选类型，'count'表示按数量，'days'表示按天数
+        value: 数量或天数值
+        
+    返回：
+        str: 结果消息
+    """
+    zotero_service = get_zotero_service()
     
-    logger.info(f"成功处理集合 {collection_id} 中的 {len(results)} 个条目")
-    return results
+    # 获取论文
+    papers = zotero_service.get_recent_items(collection_id, filter_type, value)
+    
+    if not papers:
+        return "未找到符合条件的论文"
+    
+    # 同步到 Notion
+    success_count, skip_count, errors = zotero_service.sync_items_to_notion(papers)
+    
+    # 返回格式化的结果
+    return format_sync_result(success_count, skip_count, len(papers), errors)
+
+def sync_recent_papers_by_count(collection_id: Optional[str] = None, count: int = 5) -> str:
+    """按数量同步最近的论文（兼容旧 API）"""
+    return sync_papers_to_notion(collection_id, "count", count)
+
+def sync_recent_papers_by_days(collection_id: Optional[str] = None, days: int = 7) -> str:
+    """按天数同步最近的论文（兼容旧 API）"""
+    return sync_papers_to_notion(collection_id, "days", days)
+
+def validate_collection_id(collection_id: str) -> bool:
+    """
+    验证收藏集 ID 是否有效
+    
+    参数：
+        collection_id: 要验证的收藏集 ID
+        
+    返回：
+        bool: 如果收藏集 ID 有效则返回 True，否则返回 False
+    """
+    try:
+        zotero_service = get_zotero_service()
+        # 尝试获取收藏集信息
+        collection = zotero_service.zot.collection(collection_id)
+        return True
+    except Exception:
+        return False
