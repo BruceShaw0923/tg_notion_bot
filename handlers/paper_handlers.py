@@ -9,8 +9,8 @@ import re
 
 from services.zotero_service import (
     get_zotero_service,  # 导入服务实例获取函数
-    sync_papers_to_notion,  # 导入新的统一同步函数
-    validate_collection_id
+    sync_papers_to_notion,  # 现在可以正确导入了
+    validate_collection_id  # 现在可以正确导入了
 )
 
 logger = logging.getLogger(__name__)

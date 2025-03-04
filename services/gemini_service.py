@@ -485,3 +485,61 @@ def extract_url(entry, property_name):
         return prop["url"]
         
     return ""
+
+def enrich_analysis_with_metadata(analysis: dict, metadata: dict) -> dict:
+    """
+    将 Zotero 元数据添加到 Gemini 分析结果
+    
+    参数：
+        analysis: Gemini 分析结果
+        metadata: Zotero 元数据
+        
+    返回：
+        enriched_analysis: 添加元数据后的分析结果
+    """
+    result = analysis.copy() if analysis else {}
+    
+    # 使用元数据中的标题（如果存在且分析中未提供）
+    if metadata.get('title') and not result.get('title'):
+        result['title'] = metadata['title']
+    
+    # 添加作者信息
+    if metadata.get('authors'):
+        result['authors'] = metadata['authors']
+    
+    # 添加 DOI
+    if metadata.get('doi'):
+        result['doi'] = metadata['doi']
+    
+    # 添加出版信息
+    if metadata.get('publication'):
+        result['publication'] = metadata['publication']
+    
+    # 添加日期
+    if metadata.get('date'):
+        result['date'] = metadata['date']
+    
+    # 添加 URL（如果元数据中有而分析中没有）
+    if metadata.get('url') and not result.get('url'):
+        result['url'] = metadata['url']
+    
+    # 添加摘要（如果元数据中有而分析中没有）
+    if metadata.get('abstract') and not result.get('brief_summary'):
+        result['brief_summary'] = metadata['abstract']
+    
+    # 添加 Zotero 标签
+    if metadata.get('tags'):
+        result['zotero_tags'] = metadata['tags']
+    
+    # 添加 Zotero 键值
+    if metadata.get('zotero_key'):
+        result['zotero_key'] = metadata['zotero_key']
+    
+    return result
+
+# 确保函数被正确导出
+__all__ = [
+    'analyze_content', 'analyze_pdf_content',
+    'safe_extract_fields', 'extract_and_analyze_pdf_text',
+    'generate_weekly_summary', 'enrich_analysis_with_metadata'
+]

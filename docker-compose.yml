@@ -3,12 +3,14 @@ version: '3'
 services:
   tg_notion_bot:
     build: .
+    restart: unless-stopped
     container_name: tg_notion_bot
-    restart: always
+    environment:
+      - TZ=Asia/Shanghai
+      - ZOTERO_PDF_PATH=/zotero/pdfs
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env
-    environment:
-      - TZ=Asia/Shanghai
+      - /Users/wangruochen/Zotero/storage/pdfs:/zotero/pdfs:ro
     command: python main.py
 

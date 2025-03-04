@@ -49,7 +49,9 @@ def add_to_notion(content, summary, tags, url="", created_at=None):
     """
     if not created_at:
         created_at = datetime.now()
-    
+        # 修复时区问题
+        created_at = created_at.astimezone(pytz.timezone("Asia/Shanghai"))
+   
     # 注释掉这部分，因为我们已经在 telegram_service.py 中处理了 PDF URL
     # 检查 URL 是否是 PDF 文件
     # if url and is_pdf_url(url):
@@ -151,7 +153,7 @@ def convert_to_notion_blocks(content):
     blocks = []
     
     i = 0
-    current_list_type = None  # 'bulleted' 或 'numbered'
+    current_list_type = None  # 'bulleted'  or 'numbered'
     list_levels = []  # 保存当前层级的列表项信息
     
     while i < len(lines):
@@ -193,7 +195,7 @@ def convert_to_notion_blocks(content):
             
             # 更新列表级别信息
             if current_list_type != 'bulleted' or indent_level != len(list_levels):
-                # 新的列表类型或新的缩进级别
+                # 新的列表类型 or 新的缩进级别
                 current_list_type = 'bulleted'
                 
                 # 调整 list_levels 以匹配当前级别
@@ -268,7 +270,7 @@ def convert_to_notion_blocks(content):
             i += 1
             continue
         
-        # 如果遇到空行或其他非列表项，重置列表状态
+        # 如果遇到空行 or 其他非列表项，重置列表状态
         if not line:
             current_list_type = None
             list_levels = []
@@ -370,7 +372,7 @@ def convert_to_notion_blocks(content):
 
 def limit_blocks(blocks, max_blocks=100):
     """
-    限制 Notion 块的数量和内容长度，确保不超过 API 限制
+    限制 Notion 块的数量 and 内容长度，确保不超过 API 限制
     
     参数：
     blocks (list): Notion 块列表
@@ -439,7 +441,7 @@ def limit_blocks(blocks, max_blocks=100):
                     else:
                         limited_blocks.append(block)
                 
-                # 处理段落、标题和其他文本块
+                # 处理段落、标题 and 其他文本块
                 elif content_type in ["paragraph", "heading_1", "heading_2", "heading_3", 
                                     "bulleted_list_item", "numbered_list_item", "quote", "callout"]:
                     rich_text_key = content_type
@@ -543,7 +545,7 @@ def parse_markdown_formatting(text):
     result = []
     
     # 使用一个更精确的方法来处理格式化文本
-    # 1. 首先识别所有特殊格式的位置和类型
+    # 1. 首先识别所有特殊格式的位置 and 类型
     formats = []
     
     # 定义正则表达式模式
@@ -657,7 +659,7 @@ def split_text(text, max_length):
     
     chunks = []
     for i in range(0, len(text), max_length):
-        # 如果不是第一块，尽量在句子或单词边界分割
+        # 如果不是第一块，尽量在句子 or 单词边界分割
         if i > 0 and i + max_length < len(text):
             # 尝试在句子结束处分割（句号、问号、感叹号后面）
             end = min(i + max_length, len(text))
@@ -684,13 +686,13 @@ def split_text(text, max_length):
     return chunks
 
 def determine_title(content, url, summary):
-    """基于内容、URL 和摘要确定标题"""
+    """基于内容、URL  and 摘要确定标题"""
     # 如果内容很短，直接使用内容作为标题
     if len(content) <= 100:
         return content
     
-    # 如果有 URL 和摘要，使用摘要的第一句
-    # if url and summary:
+    # 如果有 URL  and 摘要，使用摘要的第一句
+    # if url  and summary:
     #     first_sentence = summary.split(".")[0]
     #     # 确保标题长度不超过 50 个字符
     #     if len(first_sentence) > 50:
@@ -874,7 +876,7 @@ def generate_weekly_content(entries):
     for date in sorted(entries_by_date.keys()):
         content.append(f"## {date}\n")
         
-        # 添加每个条目的摘要和内链
+        # 添加每个条目的摘要 and 内链
         for entry in entries_by_date[date]:
             # 获取条目标题
             title = "无标题"
@@ -1145,7 +1147,7 @@ def add_to_papers_database(title, analysis, created_at=None, pdf_url=None, metad
     
     参数：
     title (str): 论文标题
-    analysis (dict): 论文分析结果，包含详细分析和简洁摘要
+    analysis (dict): 论文分析结果，包含详细分析 and 简洁摘要
     created_at (datetime): 创建时间
     pdf_url (str): 原始 PDF URL
     metadata (dict, optional): 其他元数据，如作者、DOI、发表日期等
@@ -1246,7 +1248,7 @@ def add_paper_metadata_to_properties(properties, metadata):
     # 添加作者（多选文本）
     if metadata.get('authors'):
         authors = metadata['authors']
-        if isinstance(authors, list) or authors:
+        if isinstance(authors, list) and authors:
             # 转为逗号分隔的字符串
             author_text = ", ".join(authors)
             properties["Authors"] = {
@@ -1259,7 +1261,7 @@ def add_paper_metadata_to_properties(properties, metadata):
             "rich_text": [{"text": {"content": metadata['publication'][:2000]}}]
         }
     
-    # 添加发布日期
+    # 添加发布日期 - 改进日期解析
     if metadata.get('date'):
         try:
             # 尝试解析日期字符串
@@ -1286,16 +1288,37 @@ def add_paper_metadata_to_properties(properties, metadata):
             "url": metadata['zotero_link']
         }
     
-    # 添加标签（多选）
+    # 添加 Zotero ID - 确保 ZoteroID 字段始终存在
+    if metadata.get('zotero_id'):
+        properties["ZoteroID"] = {
+            "rich_text": [{"text": {"content": metadata['zotero_id']}}]
+        }
+    
+    # 添加标签（多选）- 确保所有标签都被正确处理
     if metadata.get('tags') and isinstance(metadata['tags'], list):
         multi_select_tags = []
-        for tag in metadata['tags'][:10]:  # 限制数量
-            multi_select_tags.append({"name": tag[:100]})  # 限制长度
+        for tag in metadata['tags'][:20]:  # 增加标签数量限制
+            if isinstance(tag, str):
+                tag_name = tag
+            elif isinstance(tag, dict) and 'tag' in tag:
+                tag_name = tag['tag']
+            else:
+                continue
+                
+            # 确保标签名称有效且不超过长度限制
+            if tag_name and len(tag_name) > 0:
+                multi_select_tags.append({"name": tag_name[:100]})  # 限制长度
         
         if multi_select_tags:
             properties["Tags"] = {
                 "multi_select": multi_select_tags
             }
+    
+    # 添加条目类型
+    if metadata.get('item_type'):
+        properties["ItemType"] = {
+            "rich_text": [{"text": {"content": metadata['item_type']}}]
+        }
     
     return properties
 
@@ -1319,7 +1342,9 @@ def ensure_papers_database_properties():
             "DOI": {"rich_text": {}},
             "Tags": {"multi_select": {}},
             "ZoteroLink": {"url": {}},
-            "URL": {"url": {}}
+            "ZoteroID": {"rich_text": {}},
+            "URL": {"url": {}},
+            "ItemType": {"rich_text": {}}  # 添加条目类型属性
         }
         
         missing_properties = {}
@@ -1411,36 +1436,60 @@ def download_pdf(url):
         logger.error(f"下载 PDF 时出错：{e}")
         return None, 0
 
-def check_paper_exists_in_notion(doi: str) -> bool:
+def check_paper_exists_in_notion(doi: str = None, zotero_id: str = None) -> bool:
     """
-    检查论文是否已存在于 Notion 数据库中（通过 DOI）
+    检查论文是否已存在于 Notion 数据库中
     
     参数：
-        doi: 论文的 DOI
+        doi: 论文的 DOI（可选）
+        zotero_id: 论文的 Zotero ID（可选）
         
     返回：
         bool: 如果论文已存在则返回 True，否则返回 False
+        
+    说明：
+        先通过 DOI 检查，如果没有 DOI  or 未找到，则通过 ZoteroID 检查
     """
-    if not doi:
-        return False
-    
     try:
-        # 使用全局 notion 客户端，而不是调用函数
-        # notion = get_notion_client() 这行会导致错误
+        # 保持对同一个 notion 客户端的引用
+        global notion
         
-        # 查询 Notion 数据库
-        response = notion.databases.query(
-            database_id=NOTION_PAPERS_DATABASE_ID,
-            filter={
-                "property": "DOI",
-                "rich_text": {
-                    "equals": doi
+        # 首先通过 DOI 检查（如果提供）
+        if doi:
+            response = notion.databases.query(
+                database_id=NOTION_PAPERS_DATABASE_ID,
+                filter={
+                    "property": "DOI",
+                    "rich_text": {
+                        "equals": doi
+                    }
                 }
-            }
-        )
+            )
+            
+            # 如果找到结果，则论文已存在
+            if len(response.get('results', [])) > 0:
+                logger.info(f"通过 DOI 找到已存在的论文记录：{doi}")
+                return True
         
-        # 如果找到结果，则论文已存在
-        return len(response.get('results', [])) > 0
+        # 如果 DOI 检查未找到结果，且提供了 ZoteroID，则通过 ZoteroID 检查
+        if zotero_id:
+            response = notion.databases.query(
+                database_id=NOTION_PAPERS_DATABASE_ID,
+                filter={
+                    "property": "ZoteroID",
+                    "rich_text": {
+                        "equals": zotero_id
+                    }
+                }
+            )
+            
+            # 如果找到结果，则论文已存在
+            if len(response.get('results', [])) > 0:
+                logger.info(f"通过 ZoteroID 找到已存在的论文记录：{zotero_id}")
+                return True
+        
+        # 两种检查都未找到匹配项
+        return False
     
     except Exception as e:
         logger.error(f"检查论文是否存在时出错：{e}")
@@ -1492,61 +1541,127 @@ def ensure_papers_database_properties():
     except Exception as e:
         logger.error(f"确保论文数据库属性时出错：{e}")
 
-def get_existing_zotero_ids() -> set[str]:
+def get_existing_zotero_ids():
     """
-    获取已存在于 Notion 数据库中的 ZoteroID 列表
+    从 Notion 论文数据库中获取所有已存在的 ZoteroID
     
     返回：
-        set[str]: ZoteroID 集合
+    set: 已存在的 ZoteroID 集合
     """
+    if not NOTION_PAPERS_DATABASE_ID:
+        logger.error("未设置论文数据库 ID")
+        return set()
+    
     try:
-        notion_service = get_notion_service()
+        # 检查数据库是否有 ZoteroID 字段
+        db_info = notion.databases.retrieve(database_id=NOTION_PAPERS_DATABASE_ID)
+        if "ZoteroID" not in db_info.get('properties', {}):
+            logger.warning("论文数据库中没有 ZoteroID 字段，无法检查重复")
+            return set()
         
-        # 查询数据库中所有包含 Zotero ID 的记录
-        results = []
+        # 查询所有条目
+        existing_zotero_ids = set()
+        start_cursor = None
         has_more = True
-        next_cursor = None
         
-        # 获取所有页面，可能需要分页
         while has_more:
-            query_params = {
-                "filter": {
+            response = notion.databases.query(
+                database_id=NOTION_PAPERS_DATABASE_ID,
+                start_cursor=start_cursor,
+                page_size=100,  # 每页最多获取 100 条
+                filter={
                     "property": "ZoteroID",
                     "rich_text": {
                         "is_not_empty": True
                     }
                 }
-            }
-            
-            if next_cursor:
-                query_params["start_cursor"] = next_cursor
-                
-            response = notion_service.client.databases.query(
-                database_id=notion_service.papers_database_id,
-                **query_params
             )
             
-            results.extend(response.get("results", []))
-            has_more = response.get("has_more", False)
-            next_cursor = response.get("next_cursor")
-        
-        # 提取所有 Zotero ID
-        zotero_ids = set()
-        for page in results:
-            try:
-                zotero_id_prop = page.get("properties", {}).get("ZoteroID", {})
-                if zotero_id_prop and "rich_text" in zotero_id_prop:
-                    rich_text = zotero_id_prop.get("rich_text", [])
-                    if rich_text:
-                        zotero_id = rich_text[0].get("plain_text", "").strip()
+            # 提取 ZoteroID
+            for page in response["results"]:
+                if "ZoteroID" in page["properties"]:
+                    rich_text = page["properties"]["ZoteroID"].get("rich_text", [])
+                    if rich_text and "plain_text" in rich_text[0]:
+                        zotero_id = rich_text[0]["plain_text"].strip().lower()
                         if zotero_id:
-                            zotero_ids.add(zotero_id)
-            except Exception as e:
-                logger.warning(f"提取 Zotero ID 时出错：{e}")
-                
-        logger.info(f"从 Notion 数据库中获取到 {len(zotero_ids)} 个 Zotero ID")
-        return zotero_ids
+                            existing_zotero_ids.add(zotero_id)
+            
+            # 检查是否有更多数据
+            has_more = response.get("has_more", False)
+            start_cursor = response.get("next_cursor")
+            
+            if has_more:
+                # 避免请求过于频繁
+                time.sleep(0.5)
+        
+        logger.info(f"从 Notion 中获取到 {len(existing_zotero_ids)} 个已同步的 ZoteroID")
+        return existing_zotero_ids
     
     except Exception as e:
-        logger.error(f"获取现有 Zotero ID 列表时出错：{e}")
+        logger.error(f"获取已存在的 ZoteroID 时出错：{e}")
         return set()
+
+def prepare_metadata_for_notion(metadata):
+    """
+    从 Zotero 元数据准备 Notion 需要的元数据格式
+    
+    参数：
+    metadata (dict): Zotero 元数据
+    
+    返回：
+    dict: Notion 格式的元数据
+    """
+    notion_metadata = {}
+    
+    # 处理作者
+    if metadata.get('authors'):
+        notion_metadata['authors'] = metadata['authors']
+    elif metadata.get('creators'):
+        authors = []
+        for creator in metadata.get('creators', []):
+            if creator.get('firstName') or creator.get('lastName'):
+                author = f"{creator.get('firstName', '')} {creator.get('lastName', '')}".strip()
+                authors.append(author)
+        if authors:
+            notion_metadata['authors'] = authors
+    
+    # 处理出版物信息
+    if metadata.get('publication'):
+        notion_metadata['publication'] = metadata.get('publication')
+    
+    # 处理日期
+    if metadata.get('date'):
+        notion_metadata['date'] = metadata.get('date')
+    
+    # 处理 DOI - 确保保存为小写以便一致性比较
+    if metadata.get('doi'):
+        notion_metadata['doi'] = metadata.get('doi', '').lower().strip()
+    
+    # 处理 Zotero 链接和 ID
+    if metadata.get('zotero_id'):
+        notion_metadata['zotero_link'] = f"zotero://select/library/items/{metadata.get('zotero_id')}"
+        notion_metadata['zotero_id'] = metadata.get('zotero_id')
+    
+    # 处理标签
+    if metadata.get('tags'):
+        # 处理两种可能的标签格式
+        if isinstance(metadata['tags'], list) and metadata['tags']:
+            # 如果标签是简单的字符串列表
+            if isinstance(metadata['tags'][0], str):
+                notion_metadata['tags'] = metadata['tags']
+            # 如果标签是对象列表（Zotero 标签通常是这种格式）
+            elif isinstance(metadata['tags'][0], dict) and 'tag' in metadata['tags'][0]:
+                notion_metadata['tags'] = [tag_obj.get('tag') for tag_obj in metadata['tags'] if tag_obj.get('tag')]
+    
+    # 添加条目类型
+    # if metadata.get('item_type'):
+    #     notion_metadata['item_type'] = metadata.get('item_type')
+    
+    return notion_metadata
+
+__all__ = [
+    'get_notion_client', 'prepare_metadata_for_notion',
+    'check_paper_exists_in_notion', 'is_pdf_url', 'download_pdf',
+    'add_to_notion', 'add_to_todo_database', 'add_to_papers_database',
+    'get_existing_dois', 'get_existing_zotero_ids'
+]
