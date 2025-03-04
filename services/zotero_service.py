@@ -159,14 +159,16 @@ class ZoteroService:
         获取条目的 PDF 附件
         
         参数：
-            item_key: Zotero 条目的唯一键
+            item_key: Zotero 条目的唯一键（注意：这是论文条目的 ID，不是附件的 ID）
             
         返回：
             Optional[str]: 本地临时 PDF 文件路径，如果找不到则返回 None
         """
         try:
-            # 获取条目
+            # 获取条目（使用条目的 Zotero ID）
             item = self.zot.item(item_key)
+            logger.info(f"Using item key to get metadata: {item_key}")
+            metadata = self.extract_metadata(item)
             
             # 获取条目的所有子条目 (附件)
             children = self.zot.children(item_key)
@@ -174,30 +176,16 @@ class ZoteroService:
             pdf_attachments = []
             for child in children:
                 child_data = child.get('data', {})
-                
-                # 只处理 PDF 附件
-                if (child_data.get('itemType') == 'attachment' and 
-                    child_data.get('contentType') == 'application/pdf'):
-                    
-                    # 获取附件的文件名
-                    filename = child_data.get('filename', '')
-                    title = child_data.get('title', '')
-                    
-                    if filename or title:
-                        pdf_attachments.append({
-                            'key': child.get('key'),
-                            'filename': filename or title,
-                            'title': title
-                        })
-                        logger.info(f"Found PDF attachment: {filename or title}")
+                if child_data.get('contentType') == 'application/pdf' or child_data.get('filename', '').lower().endswith('.pdf'):
+                    pdf_attachments.append(child)
             
-            if not pdf_attachments:
-                logger.warning(f"No PDF attachments found for item {item_key}")
-                return None
-            
-            # 优先使用第一个 PDF 附件
-            attachment = pdf_attachments[0]
-            filename = attachment['filename']
+            if pdf_attachments:
+                # 使用找到的第一个 PDF 附件
+                attachment = pdf_attachments[0]
+                filename = attachment['data'].get('filename', metadata['title'])
+            else:
+                # 如果没有找到 PDF 附件，使用论文标题作为文件名
+                filename = metadata['title']
             
             # 确保文件名有.pdf 后缀
             if not filename.lower().endswith('.pdf'):
@@ -206,25 +194,54 @@ class ZoteroService:
             # 尝试在本地存储路径中查找文件
             source_path = os.path.join(self.pdf_storage_path, filename)
             logger.info(f"Looking for file at: {source_path}")
-            if os.path.exists(source_path):
+            if (os.path.exists(source_path)):
                 logger.info(f"在本地找到 PDF: {source_path}")
                 try:
-                # 创建临时目录
+                    # 创建临时目录
                     temp_dir = tempfile.mkdtemp()
                     logger.info(f"创建临时目录：{temp_dir}")
                     # 生成临时文件名 - 使用原始文件名
                     target_path = os.path.join(temp_dir, os.path.basename(filename))
-                            # 使用 shutil.copy2 复制文件
+                    # 使用 shutil.copy2 复制文件
                     shutil.copy2(source_path, target_path)
                     if os.path.exists(target_path):
                         logger.info(f"PDF 文件成功复制到：{target_path}")
                         return target_path
                     else:
-                                logger.error("PDF 文件复制失败")
+                        logger.error("PDF 文件复制失败")
                 except Exception as e:
                     logger.error(f"复制 PDF 文件时发生错误：{str(e)}")
             else:
                 logger.warning(f"未在本地找到 PDF: {source_path}")
+                
+                # 如果本地文件不存在，并且找到了附件，尝试通过 Zotero API 获取
+                if pdf_attachments:
+                    try:
+                        attachment = pdf_attachments[0]
+                        logger.info(f"尝试通过 Zotero API 获取附件 {attachment['key']}")
+                        # 注意：这里使用附件的 key，而不是条目的 key
+                        attachment_item = self.zot.item(attachment['key'])
+                        if 'links' in attachment_item and 'enclosure' in attachment_item['links']:
+                            download_url = attachment_item['links']['enclosure']['href']
+                            logger.info(f"获取到下载链接：{download_url}")
+                            
+                            # 下载 PDF 到临时目录
+                            temp_dir = tempfile.mkdtemp()
+                            target_path = os.path.join(temp_dir, os.path.basename(filename))
+                            
+                            # 使用带有鉴权的请求下载文件
+                            headers = {"Authorization": f"Bearer {self.api_key}"}
+                            response = requests.get(download_url, headers=headers, stream=True)
+                            if response.status_code == 200:
+                                with open(target_path, 'wb') as f:
+                                    for chunk in response.iter_content(chunk_size=8192):
+                                        f.write(chunk)
+                                logger.info(f"成功下载 PDF 文件到：{target_path}")
+                                return target_path
+                            else:
+                                logger.error(f"下载 PDF 失败，状态码：{response.status_code}")
+                    except Exception as e:
+                        logger.error(f"通过 API 获取 PDF 失败：{str(e)}")
         except Exception as e:
             logger.error(f"获取 PDF 附件时出错：{str(e)}")
         
@@ -242,7 +259,7 @@ class ZoteroService:
                 metadata = self.extract_metadata(item)
                 
                 # 记录更详细的元数据信息
-                # logger.info(f"Processing paper: {metadata['file_title']}")
+                logger.info(f"Processing paper: {metadata['title']}")
                 logger.info(f"Authors: {', '.join(metadata['authors']) if metadata['authors'] else 'Not available'}")
                 logger.info(f"DOI: {metadata['doi'] or 'Not available'}")
                 logger.info(f"Publication: {metadata['publication'] or 'Not available'}")
