@@ -3,7 +3,20 @@ from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Callb
 import logging
 import os
 import tempfile
+import urllib3
+import warnings
 from config import TELEGRAM_BOT_TOKEN, ALLOWED_USER_IDS
+
+# 尽早导入并使用 SSL 配置
+from utils.ssl_helper import configure_ssl_verification
+
+# 禁用不安全请求的警告（虽然在 ssl_helper 中已经设置，但保留这行作为备份）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# 添加自定义警告记录
+if os.environ.get('DISABLE_TELEGRAM_SSL_VERIFY', 'False').lower() in ('true', '1', 't', 'yes'):
+    logging.warning("SSL 证书验证已禁用。这可能存在安全风险，仅建议在特殊网络环境中使用。")
+
 from services.notion_service import (
     add_to_notion, add_to_todo_database, add_to_papers_database,
     is_pdf_url, download_pdf
@@ -496,26 +509,50 @@ def error_handler(update, context):
             text=f"抱歉，处理您的请求时发生了错误。错误已被记录，我们会尽快解决。"
         )
 
-def setup_telegram_bot():
+def setup_telegram_bot(updater=None):
     """设置并启动 Telegram 机器人"""
-    # 设置更长的超时时间和重试连接逻辑
-    request_kwargs = {
-        'connect_timeout': 30.0,  # 连接超时时间
-        'read_timeout': 30.0,     # 读取超时时间
-        'con_pool_size': 10,      # 连接池大小
-    }
-    
-    # 创建 Updater 并提供网络设置
-    updater = Updater(TELEGRAM_BOT_TOKEN, request_kwargs=request_kwargs)
-    dispatcher = updater.dispatcher
+    # 如果已提供 updater，则使用它
+    if updater:
+        dispatcher = updater.dispatcher
+        logger.info("使用已初始化的 updater 实例")
+    else:
+        # 设置更长的超时时间和重试连接逻辑
+        request_kwargs = {
+            'connect_timeout': 30.0,  # 连接超时时间
+            'read_timeout': 30.0,     # 读取超时时间
+            'con_pool_size': 10,      # 连接池大小
+        }
+        
+        # 检查并添加代理设置
+        proxy_url = os.environ.get('https_proxy') or os.environ.get('http_proxy') or os.environ.get('all_proxy')
+        if proxy_url and proxy_url.strip():
+            logger.info(f"Telegram 服务使用代理：{proxy_url}")
+            request_kwargs['proxy_url'] = proxy_url
+            
+            # 设置 urllib3 代理参数
+            urllib3_kwargs = {
+                'timeout': 30
+            }
+            
+            # 检查是否需要禁用证书验证
+            if os.environ.get('DISABLE_TELEGRAM_SSL_VERIFY', 'False').lower() in ('true', '1', 't', 'yes'):
+                urllib3_kwargs['cert_reqs'] = 'CERT_NONE'
+                logger.info("Telegram 服务已禁用 SSL 证书验证")
+            
+            # 设置代理参数
+            request_kwargs['urllib3_proxy_kwargs'] = urllib3_kwargs
+        
+        # 创建 Updater 并提供网络设置
+        updater = Updater(TELEGRAM_BOT_TOKEN, request_kwargs=request_kwargs)
+        dispatcher = updater.dispatcher
     
     # 创建用户过滤器
     user_filter = Filters.user(user_id=ALLOWED_USER_IDS) if ALLOWED_USER_IDS else None
     
     # 注册处理程序
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("help", help_command))
-    dispatcher.add_handler(CommandHandler("weekly", weekly_report_command))
+    dispatcher.add_handler(CommandHandler("start", start, filters=user_filter))
+    dispatcher.add_handler(CommandHandler("help", help_command, filters=user_filter))
+    dispatcher.add_handler(CommandHandler("weekly", weekly_report_command, filters=user_filter))
     
     # 添加论文处理命令
     dispatcher.add_handler(CommandHandler("collections", list_collections, filters=user_filter))
@@ -530,7 +567,7 @@ def setup_telegram_bot():
     
     # 添加错误处理器
     dispatcher.add_error_handler(error_handler)
-    logger.info("已添加错误处理器")
+    logger.info("已添加命令和消息处理器")
     
     return updater
 

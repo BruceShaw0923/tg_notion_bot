@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 # 配置 Google Gemini API
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
-    vision_model = genai.GenerativeModel('gemini-pro-vision')
+    model = genai.GenerativeModel('gemini-2.0-pro-exp-02-05')
+    vision_model = genai.GenerativeModel('gemini-2.0-pro-exp-02-05')
     GEMINI_AVAILABLE = bool(GEMINI_API_KEY)
 except Exception as e:
     logger.error(f"配置 Gemini API 时出错：{e}")
