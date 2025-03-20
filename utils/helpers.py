@@ -15,30 +15,51 @@ def truncate_text(text, max_length=100):
     return text[:max_length-3] + "..."
 
 def extract_url_from_text(text):
-    """从文本中提取第一个 URL（旧函数保留向后兼容）"""
-    if not text:
-        return None
-    
-    url_pattern = r'https?://\S+'
-    match = re.search(url_pattern, text)
-    if match:
-        return match.group()
-    return None
-
-def extract_all_urls_from_text(text):
-    """从文本中提取所有 URL
+    """
+    从文本中提取第一个 URL
     
     参数：
-    text (str): 输入文本
+    text (str): 要分析的文本
     
     返回：
-    list: URL 列表
+    str: 提取的 URL 或空字符串
+    """
+    urls = extract_all_urls_from_text(text)
+    return urls[0] if urls else ""
+
+def extract_all_urls_from_text(text):
+    """
+    从文本中提取所有 URL
+    
+    参数：
+    text (str): 要分析的文本
+    
+    返回：
+    list: 提取的 URL 列表
     """
     if not text:
         return []
     
-    url_pattern = r'https?://[^\s<>"\']+'
-    return re.findall(url_pattern, text)
+    # 增强的 URL 正则表达式，能识别括号包裹的 URL 和标准 URL
+    # 先匹配标准 URL 格式
+    standard_url_pattern = r'(?:https?://|www\.)[^\s\)\]\'"]+(?:\.[^\s\)\]\'"]+)+[^\s\)\]\'".,;:]+'
+    # 匹配括号中的 URL 格式 - 专门处理 (http://example.com) 这种情况
+    bracketed_url_pattern = r'\((?:https?://|www\.)[^\s\)]+\)'
+    
+    # 查找所有标准 URL
+    standard_urls = re.findall(standard_url_pattern, text)
+    
+    # 查找所有括号包裹的 URL 并去除括号
+    bracketed_urls_with_brackets = re.findall(bracketed_url_pattern, text)
+    bracketed_urls = [url[1:-1] for url in bracketed_urls_with_brackets] # 移除首尾的括号
+    
+    # 合并并去重
+    all_urls = []
+    for url in standard_urls + bracketed_urls:
+        if url not in all_urls:
+            all_urls.append(url)
+    
+    return all_urls
 
 def format_datetime(dt):
     """格式化日期时间"""

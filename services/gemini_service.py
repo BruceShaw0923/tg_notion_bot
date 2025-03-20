@@ -7,8 +7,8 @@ from config import GEMINI_API_KEY, PREDEFINED_TAG_CATEGORIES
 from utils.helpers import extract_tags_from_categories
 from config.prompts import (
     CONTENT_ANALYSIS_PROMPT,
-    PDF_ANALYSIS_PROMPT,
-    PDF_TEXT_ANALYSIS_PROMPT,
+    NEW_PDF_ANALYSIS_PROMPT,
+    NEW_PDF_TEXT_ANALYSIS_PROMPT,
     WEEKLY_SUMMARY_PROMPT
 )
 
@@ -130,7 +130,7 @@ def analyze_pdf_content(pdf_path, url=None):
 
             # 创建上下文提示
             url_context = f"该 PDF 文件来源：{url}" if url else "请分析以下 PDF 文件"
-            prompt = PDF_ANALYSIS_PROMPT.format(url_context=url_context)
+            prompt = NEW_PDF_ANALYSIS_PROMPT.format(url_context=url_context)
             
             # 创建包含 PDF 的请求
             image_parts = [
@@ -227,14 +227,17 @@ def safe_extract_fields(text):
     
     summary_match = re.search(summary_pattern, text, re.IGNORECASE | re.DOTALL)
     if summary_match:
+        # 不需要在这里限制摘要长度，notion_service 会处理
         result["brief_summary"] = summary_match.group(1).strip()
     
     insight_match = re.search(insight_pattern, text, re.IGNORECASE | re.DOTALL)
     if insight_match:
+        # 不需要在这里限制洞察内容长度，notion_service 会处理分割
         result["insight"] = insight_match.group(1).strip()
     
     details_match = re.search(details_pattern, text, re.IGNORECASE | re.DOTALL)
     if details_match:
+        # 不限制详情长度，notion_service 会处理超长内容
         result["details"] = details_match.group(1).strip()
     
     # 如果没有找到详情字段，使用整个响应
@@ -248,7 +251,7 @@ def safe_extract_fields(text):
     # 如果没有找到摘要，尝试使用前几行作为摘要
     if "brief_summary" not in result or not result["brief_summary"]:
         first_lines = " ".join(text.split("\n")[:3])
-        result["brief_summary"] = first_lines[:300]
+        result["brief_summary"] = first_lines  # 移除长度限制
     
     # 如果没有找到洞察，提供默认值
     if "insight" not in result or not result["insight"]:
@@ -294,7 +297,7 @@ def extract_and_analyze_pdf_text(pdf_path):
         text = text[:15000] + ("..." if len(text) > 15000 else "")
         
         # 使用文本模型生成分析
-        prompt = PDF_TEXT_ANALYSIS_PROMPT.format(text=text)
+        prompt = NEW_PDF_TEXT_ANALYSIS_PROMPT.format(text=text)
         
         response = model.generate_content(prompt)
         response_text = response.text
@@ -524,7 +527,7 @@ def enrich_analysis_with_metadata(analysis: dict, metadata: dict) -> dict:
         result['url'] = metadata['url']
     
     # 添加摘要（如果元数据中有而分析中没有）
-    if metadata.get('abstract') and not result.get('brief_summary'):
+    if metadata.get('abstract') and not result['brief_summary']:
         result['brief_summary'] = metadata['abstract']
     
     # 添加 Zotero 标签

@@ -3,7 +3,7 @@ version: '3'
 services:
   tg_notion_bot:
     build: .
-    restart: unless-stopped
+    restart: always  # 改为 always 确保任何情况下都会重启
     container_name: tg_notion_bot
     environment:
       - TZ=Asia/Shanghai
@@ -12,15 +12,24 @@ services:
       - http_proxy=http://host.docker.internal:7890 
       - https_proxy=http://host.docker.internal:7890
       - all_proxy=socks5://host.docker.internal:7890
+      # 添加保活设置
+      - KEEP_ALIVE=true
+      - RETRY_INTERVAL=30
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # network_mode: "host"  # 使用主机网络模式，直接访问本地代理
     networks:
       - proxy_network
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env
       - /Users/wangruochen/Zotero/storage/pdfs:/zotero/pdfs:ro
+    # 启用健康检查
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://api.telegram.org')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     # 启动命令优化
     command: 
       - sh

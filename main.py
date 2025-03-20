@@ -23,6 +23,9 @@ sys.path.append(str(root_dir))
 # 首先加载环境变量，确保设置可用
 load_dotenv()
 
+# 导入保活模块
+from utils.keep_alive import KEEP_ALIVE
+
 # 导入智能代理设置（替代 SSL helper）
 from utils.smart_proxy import configure_proxy_for_telegram, test_connectivity
 
@@ -44,6 +47,9 @@ from services.weekly_report import generate_weekly_report
 # 导入参数验证工具
 from utils.telegram_helper import validate_request_kwargs, monitor_telegram_webhook, clear_webhook
 
+# 确保日志目录存在
+os.makedirs(os.path.join(root_dir, "logs"), exist_ok=True)
+
 # 配置日志系统
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -59,6 +65,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 5
 RETRY_DELAY = 5  # seconds
 should_exit = False
+connection_check_interval = 600  # 10 分钟检查一次连接
 
 def init_bot(token: str, disable_certificate_verification: bool = False) -> Optional[Updater]:
     """
@@ -158,6 +165,24 @@ def run_scheduler():
             logger.error(f"定时任务执行错误：{e}")
             time.sleep(300)  # 出错后等待 5 分钟再继续
 
+def check_connection():
+    """定期检查并维护连接"""
+    global should_exit
+    
+    while not should_exit:
+        try:
+            # 测试与 Telegram API 的连接
+            test_result = test_connectivity()
+            if not test_result:
+                logger.warning("检测到连接问题，尝试重新配置代理...")
+                # 重新配置代理
+                configure_proxy_for_telegram()
+        except Exception as e:
+            logger.error(f"连接检查时出错：{e}")
+        
+        # 等待下次检查
+        time.sleep(connection_check_interval)
+
 def signal_handler(sig, frame):
     """处理进程信号，优雅退出"""
     global should_exit
@@ -203,6 +228,13 @@ def main():
     scheduler_thread = threading.Thread(target=run_scheduler)
     scheduler_thread.daemon = True
     scheduler_thread.start()
+    
+    # 启动连接检查线程
+    if KEEP_ALIVE:
+        logger.info("启动连接保活线程...")
+        connection_thread = threading.Thread(target=check_connection)
+        connection_thread.daemon = True
+        connection_thread.start()
     
     # 设置信号处理器
     signal.signal(signal.SIGINT, signal_handler)

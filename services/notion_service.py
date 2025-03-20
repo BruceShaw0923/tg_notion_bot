@@ -8,6 +8,12 @@ import re
 import os
 import requests
 import tempfile
+import time
+import pytz
+
+
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,16 +58,6 @@ def add_to_notion(content, summary, tags, url="", created_at=None):
         # 修复时区问题
         created_at = created_at.astimezone(pytz.timezone("Asia/Shanghai"))
    
-    # 注释掉这部分，因为我们已经在 telegram_service.py 中处理了 PDF URL
-    # 检查 URL 是否是 PDF 文件
-    # if url and is_pdf_url(url):
-    #     logger.info(f"检测到 PDF URL: {url}，将按照学术论文解析")
-    #     try:
-    #         # 下载 PDF 文件用于解析
-    #         pdf_path, _ = download_pdf(url)
-    #         if pdf_path:
-    #             ... 原有 PDF 处理逻辑 ...
-    
     # 确定页面标题
     title = determine_title(content, url, summary)
     
@@ -73,54 +69,156 @@ def add_to_notion(content, summary, tags, url="", created_at=None):
     # 将内容转换为 Notion 块格式
     content_blocks = convert_to_notion_blocks(content)
     
-    # 限制块数量，确保不超过 Notion API 限制
-    content_blocks = limit_blocks(content_blocks)
     # 截断摘要，确保不超过 2000 个字符
     truncated_summary = summary[:2000] if summary else ""
     
     # 创建 Notion 页面
     try:
-        new_page = notion.pages.create(
-            parent={"database_id": NOTION_DATABASE_ID},
-            properties={
-                "Name": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": title
+        # 块的数量
+        blocks_count = len(content_blocks)
+        
+        # 如果块数量超过 API 限制 (100)，我们需要分批添加
+        if blocks_count > 100:
+            logger.info(f"内容包含 {blocks_count} 个块，超过 API 限制，将分批添加")
+            
+            # 先创建没有子块的页面
+            new_page = notion.pages.create(
+                parent={"database_id": NOTION_DATABASE_ID},
+                properties={
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": title
+                                }
                             }
-                        }
-                    ]
-                },
-                "Summary": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": truncated_summary
+                        ]
+                    },
+                    "Summary": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": truncated_summary
+                                }
                             }
+                        ]
+                    },
+                    "Tags": {
+                        "multi_select": tag_objects
+                    },
+                    "URL": {
+                        "url": url if url else None
+                    },
+                    "Created": {
+                        "date": {
+                            "start": created_at.isoformat()
                         }
-                    ]
-                },
-                "Tags": {
-                    "multi_select": tag_objects
-                },
-                "URL": {
-                    "url": url if url else None
-                },
-                "Created": {
-                    "date": {
-                        "start": created_at.isoformat()
                     }
                 }
-            },
-            children=content_blocks
-        )
-        logger.info(f"成功创建 Notion 页面：{new_page['id']}")
-        return new_page['id']
+            )
+            
+            # 获取新创建页面的 ID
+            page_id = new_page['id']
+            
+            # 然后分批添加子块
+            append_blocks_in_batches(page_id, content_blocks)
+            
+            logger.info(f"成功创建 Notion 页面并分批添加 {blocks_count} 个块：{page_id}")
+            return page_id
+        else:
+            # 如果块数量不超过限制，直接创建带有子块的页面
+            new_page = notion.pages.create(
+                parent={"database_id": NOTION_DATABASE_ID},
+                properties={
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": title
+                                }
+                            }
+                        ]
+                    },
+                    "Summary": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": truncated_summary
+                                }
+                            }
+                        ]
+                    },
+                    "Tags": {
+                        "multi_select": tag_objects
+                    },
+                    "URL": {
+                        "url": url if url else None
+                    },
+                    "Created": {
+                        "date": {
+                            "start": created_at.isoformat()
+                        }
+                    }
+                },
+                children=content_blocks
+            )
+            
+            logger.info(f"成功创建 Notion 页面：{new_page['id']}，包含 {len(content_blocks)} 个块")
+            return new_page['id']
     
     except Exception as e:
         logger.error(f"创建 Notion 页面时出错：{e}")
         raise
+
+def append_blocks_in_batches(page_id, blocks, batch_size=100):
+    """
+    分批将块添加到 Notion 页面
+    
+    参数：
+    page_id (str): Notion 页面 ID
+    blocks (list): 要添加的块列表
+    batch_size (int): 每批最大块数，默认 100 (Notion API 限制)
+    
+    返回：
+    bool: 是否成功添加所有块
+    """
+    total_blocks = len(blocks)
+    batches_count = (total_blocks + batch_size - 1) // batch_size  # 向上取整
+    
+    logger.info(f"开始分批添加 {total_blocks} 个块，分为 {batches_count} 批")
+    
+    for i in range(0, total_blocks, batch_size):
+        batch = blocks[i:i + batch_size]
+        batch_num = i // batch_size + 1
+        
+        try:
+            # 添加一批块
+            notion.blocks.children.append(
+                block_id=page_id,
+                children=batch
+            )
+            
+            logger.info(f"成功添加第 {batch_num}/{batches_count} 批，包含 {len(batch)} 个块")
+            
+            # 添加短暂延迟避免请求过于频繁
+            if batch_num < batches_count:
+                time.sleep(0.5)
+                
+        except Exception as e:
+            logger.error(f"添加第 {batch_num}/{batches_count} 批块时出错：{e}")
+            
+            # 尝试细分批次重试
+            if len(batch) > 10:
+                logger.info(f"尝试将批次细分后重试...")
+                smaller_batch_size = len(batch) // 2
+                success = append_blocks_in_batches(page_id, batch, smaller_batch_size)
+                if not success:
+                    return False
+            else:
+                # 如果批次已经很小仍然失败，则跳过该批次
+                logger.warning(f"跳过添加失败的 {len(batch)} 个块")
+    
+    return True
 
 def convert_to_notion_blocks(content):
     """
@@ -385,19 +483,14 @@ def limit_blocks(blocks, max_blocks=100):
         return []
         
     MAX_TEXT_LENGTH = 2000  # Notion API 文本长度限制
-    limited_blocks = []
+    processed_blocks = []
     blocks_processed = 0
     
-    # 留出一个位置给可能的截断提示块
-    actual_max_blocks = max_blocks - 1
+    # 注意：我们不再截断内容，而是处理每个块以确保它能被 API 接受
+    # 移除之前的 actual_max_blocks 限制，以处理所有块
     
     # 处理所有块，确保每个块的内容不超过限制
     for block in blocks:
-        # 如果已经处理了最大数量的块，直接退出循环
-        if len(limited_blocks) >= actual_max_blocks:
-            logger.warning(f"达到最大块限制 ({actual_max_blocks})，停止处理其余 {len(blocks) - blocks_processed} 个块")
-            break
-            
         blocks_processed += 1
         block_type = block.get("object", "block")
         
@@ -430,16 +523,9 @@ def limit_blocks(blocks, max_blocks=100):
                                 }
                             })
                         
-                        # 确保添加的代码块不会超过限制
-                        remaining_slots = actual_max_blocks - len(limited_blocks)
-                        if len(code_chunks) > remaining_slots:
-                            limited_blocks.extend(code_chunks[:remaining_slots])
-                            logger.warning(f"代码块过长，只保留了前 {remaining_slots} 个代码块")
-                            break  # 退出循环，添加截断提示
-                        else:
-                            limited_blocks.extend(code_chunks)
+                        processed_blocks.extend(code_chunks)
                     else:
-                        limited_blocks.append(block)
+                        processed_blocks.append(block)
                 
                 # 处理段落、标题 and 其他文本块
                 elif content_type in ["paragraph", "heading_1", "heading_2", "heading_3", 
@@ -473,49 +559,21 @@ def limit_blocks(blocks, max_blocks=100):
                                         
                                 text_chunks.append(new_block)
                             
-                            # 确保添加的文本块不会超过限制
-                            remaining_slots = actual_max_blocks - len(limited_blocks)
-                            if len(text_chunks) > remaining_slots:
-                                limited_blocks.extend(text_chunks[:remaining_slots])
-                                logger.warning(f"文本块过长，只保留了前 {remaining_slots} 个文本块")
-                                break  # 退出循环，添加截断提示
-                            else:
-                                limited_blocks.extend(text_chunks)
+                            processed_blocks.extend(text_chunks)
                         else:
-                            limited_blocks.append(block)
+                            processed_blocks.append(block)
                 else:
                     # 其他类型的块直接添加
-                    limited_blocks.append(block)
+                    processed_blocks.append(block)
             else:
-                limited_blocks.append(block)
+                processed_blocks.append(block)
         else:
-            limited_blocks.append(block)
+            processed_blocks.append(block)
     
-    # 检查是否需要添加截断提示
-    if blocks_processed < len(blocks) or len(limited_blocks) >= actual_max_blocks:
-        # 确保我们始终有空间添加警告块
-        if len(limited_blocks) >= max_blocks:
-            # 移除一个块来腾出空间
-            limited_blocks.pop()
-        
-        # 添加截断警告
-        limited_blocks.append({
-            "object": "block",
-            "callout": {
-                "rich_text": [{"text": {"content": f"内容过长，已截断显示 ({len(limited_blocks)} / {len(blocks)} 块)。完整内容请参考原始文档。"}}],
-                "icon": {"emoji": "⚠️"},
-                "color": "yellow_background"
-            }
-        })
-        
-        logger.warning(f"内容过多 ({len(blocks)} 块)，已截断至 {len(limited_blocks)} 块")
+    # 记录处理结果
+    logger.info(f"处理了 {blocks_processed} 个块，生成了 {len(processed_blocks)} 个处理后的块")
     
-    # 最终确保块数量不超过限制
-    if len(limited_blocks) > max_blocks:
-        logger.error(f"致命错误：限制后块数量 ({len(limited_blocks)}) 仍然超过 Notion API 限制 ({max_blocks})")
-        return limited_blocks[:max_blocks]
-    
-    return limited_blocks
+    return processed_blocks
 
 def parse_markdown_formatting(text):
     """
@@ -528,6 +586,7 @@ def parse_markdown_formatting(text):
     - `代码`
     - [链接](URL)
     - [内容](https://notion.so/PAGE_ID) 作为 Notion 页面链接
+    - (URL) - 括号包裹的 URL
     
     参数：
     text (str): 包含 Markdown 格式的文本
@@ -554,6 +613,8 @@ def parse_markdown_formatting(text):
         (r'\[(.+?)\]\(https://notion\.so/([a-zA-Z0-9]+)\)', 'notion_page'),
         # 普通链接 [text](url)
         (r'\[(.+?)\]\((?!https://notion\.so/)(.+?)\)', 'link'),
+        # 括号包裹的 URL (http://example.com)
+        (r'\((https?://[^\s\)]+)\)', 'bracket_link'),
         # 加粗 **text**
         (r'\*\*(.+?)\*\*', 'bold'),
         # 斜体 *text*
@@ -568,16 +629,22 @@ def parse_markdown_formatting(text):
     for pattern, format_type in patterns:
         for match in re.finditer(pattern, text):
             start, end = match.span()
-            content = match.group(1)  # 格式内的实际文本
             
-            # 处理不同类型的链接
-            if format_type == 'link':
-                url = match.group(2)
-                formats.append((start, end, format_type, content, url))
-            elif format_type == 'notion_page':
-                page_id = match.group(2)
+            # 处理不同类型的格式
+            if format_type == 'notion_page':
+                content = match.group(1)  # 链接文本
+                page_id = match.group(2)  # 页面 ID
                 formats.append((start, end, format_type, content, page_id))
+            elif format_type == 'link':
+                content = match.group(1)  # 链接文本
+                url = match.group(2)  # URL
+                formats.append((start, end, format_type, content, url))
+            elif format_type == 'bracket_link':
+                url = match.group(1)  # URL (不含括号)
+                # 对于括号包裹的链接，使用 URL 本身作为显示文本
+                formats.append((start, end, 'link', url, url))
             else:
+                content = match.group(1)  # 格式内的实际文本
                 formats.append((start, end, format_type, content, None))
     
     # 2. 按照起始位置排序格式标记
@@ -766,32 +833,70 @@ def create_weekly_report(title, content):
         blocks = convert_to_notion_blocks(processed_content)
         
         # 创建页面
-        new_page = notion.pages.create(
-            parent={"database_id": NOTION_DATABASE_ID},
-            properties={
-                "Name": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": title
+        blocks_count = len(blocks)
+        
+        # 如果块数量超过 API 限制，分批添加
+        if blocks_count > 100:
+            logger.info(f"周报包含 {blocks_count} 个块，超过 API 限制，将分批添加")
+            
+            # 先创建没有子块的页面
+            new_page = notion.pages.create(
+                parent={"database_id": NOTION_DATABASE_ID},
+                properties={
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": title
+                                }
                             }
+                        ]
+                    },
+                    "Tags": {
+                        "multi_select": [{"name": "周报"}]
+                    },
+                    "Created": {
+                        "date": {
+                            "start": datetime.now().isoformat()
                         }
-                    ]
-                },
-                "Tags": {
-                    "multi_select": [{"name": "周报"}]
-                },
-                "Created": {
-                    "date": {
-                        "start": datetime.now().isoformat()
                     }
                 }
-            },
-            children=blocks
-        )
-        
-        page_id = new_page['id']
-        logger.info(f"成功创建周报页面：{page_id}")
+            )
+            
+            # 获取新创建页面的 ID
+            page_id = new_page['id']
+            
+            # 然后分批添加子块
+            append_blocks_in_batches(page_id, blocks)
+            
+            logger.info(f"成功创建周报页面并分批添加 {blocks_count} 个块：{page_id}")
+        else:
+            new_page = notion.pages.create(
+                parent={"database_id": NOTION_DATABASE_ID},
+                properties={
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": title
+                                }
+                            }
+                        ]
+                    },
+                    "Tags": {
+                        "multi_select": [{"name": "周报"}]
+                    },
+                    "Created": {
+                        "date": {
+                            "start": datetime.now().isoformat()
+                        }
+                    }
+                },
+                children=blocks
+            )
+            
+            page_id = new_page['id']
+            logger.info(f"成功创建周报页面：{page_id}，包含 {len(blocks)} 个块")
         
         # 返回页面 URL
         return f"https://notion.so/{page_id.replace('-', '')}"
@@ -1027,13 +1132,14 @@ def create_auto_weekly_report():
     logger.info(f"成功创建周报：{title} ({report_url})")
     return report_url
 
-def add_to_todo_database(content, created_at=None):
+def add_to_todo_database(content, created_at=None, duration_hours=None):
     """
     将待办事项添加到 Notion 待办事项数据库
     
     参数：
     content (str): 待办事项内容
     created_at (datetime): 创建时间
+    duration_hours (float): 任务持续时间（小时）
     
     返回：
     str: 创建的页面 ID
@@ -1044,11 +1150,31 @@ def add_to_todo_database(content, created_at=None):
     
     if not created_at:
         created_at = datetime.now()
+        
+    # 确保 created_at 有时区信息
+    if created_at.tzinfo is None:
+        beijing_tz = pytz.timezone('Asia/Shanghai')
+        created_at = beijing_tz.localize(created_at)
+    
+    # 计算结束时间
+    if duration_hours is not None:
+        end_time = created_at + timedelta(hours=duration_hours)
+    else:
+        # 默认设置 24 小时
+        end_time = created_at + timedelta(hours=24)
     
     # 截取标题
     title = truncate_text(content, 100)
     
     try:
+        # 准备日期属性，包含开始和结束时间
+        date_property = {
+            "start": created_at.isoformat()
+        }
+        
+        # 添加结束时间
+        date_property["end"] = end_time.isoformat()
+        
         new_page = notion.pages.create(
             parent={"database_id": NOTION_TODO_DATABASE_ID},
             properties={
@@ -1062,7 +1188,7 @@ def add_to_todo_database(content, created_at=None):
                     "select": {"name": "中"}
                 },
                 "Created": {
-                    "date": {"start": created_at.isoformat()}
+                    "date": date_property
                 }
             },
             children=[
@@ -1141,6 +1267,46 @@ def get_existing_dois():
         logger.error(f"获取已存在的 DOI 时出错：{e}")
         return set()
 
+def create_text_blocks_from_content(content, block_type="paragraph", emoji=None, color=None):
+    """
+    将长文本内容转换为多个 Notion 块，确保每个块不超过 2000 字符
+    
+    参数：
+    content (str): 要转换的文本内容
+    block_type (str): 块类型，如 'paragraph', 'callout', 'quote' 等
+    emoji (str, optional): 如果是 callout 类型，可以指定 emoji 图标
+    color (str, optional): 块的颜色，如 'default', 'blue', 'red' 等
+    
+    返回：
+    list: Notion 块对象列表
+    """
+    if not content:
+        return []
+    
+    blocks = []
+    # 使用 split_text 函数分割文本，确保每部分不超过 2000 字符
+    text_parts = split_text(content, 2000)
+    
+    for i, part in enumerate(text_parts):
+        block = {
+            "object": "block",
+            block_type: {
+                "rich_text": [{"text": {"content": part}}]
+            }
+        }
+        
+        # 仅为第一个块添加 emoji (如果提供)
+        if block_type == "callout" and emoji and i == 0:
+            block[block_type]["icon"] = {"emoji": emoji}
+        
+        # 添加颜色 (如果提供)
+        if color:
+            block[block_type]["color"] = color
+            
+        blocks.append(block)
+    
+    return blocks
+
 def add_to_papers_database(title, analysis, created_at=None, pdf_url=None, metadata=None, zotero_id=None):
     """
     将论文分析添加到论文数据库
@@ -1201,15 +1367,16 @@ def add_to_papers_database(title, analysis, created_at=None, pdf_url=None, metad
     # 准备内容块
     children = []
     
-    # 添加洞察部分
+    # 添加洞察部分 - 不再简单截断，而是分割成多个块
     if analysis.get('insight'):
-        children.append({
-            "object": "block",
-            "callout": {
-                "rich_text": [{"text": {"content": analysis.get('insight', '')[:150]}}],
-                "icon": {"emoji": "💡"}
-            }
-        })
+        # 创建一个或多个 callout 块用于洞察内容
+        insight_blocks = create_text_blocks_from_content(
+            analysis.get('insight', ''), 
+            block_type="callout", 
+            emoji="💡", 
+            color="yellow_background"
+        )
+        children.extend(insight_blocks)
     
     # 添加详细分析块
     if analysis.get('details'):
@@ -1221,14 +1388,36 @@ def add_to_papers_database(title, analysis, created_at=None, pdf_url=None, metad
         # 首先确保数据库有需要的属性
         ensure_papers_database_properties()
         
-        # 创建页面
-        new_page = notion.pages.create(
-            parent={"database_id": NOTION_PAPERS_DATABASE_ID},
-            properties=properties,
-            children=children
-        )
-        logger.info(f"成功创建论文分析：{new_page['id']}")
-        return new_page['id']
+        # 检查块数量
+        blocks_count = len(children)
+        
+        # 如果块数量超过 API 限制，分批添加
+        if blocks_count > 100:
+            logger.info(f"论文分析包含 {blocks_count} 个块，超过 API 限制，将分批添加")
+            
+            # 先创建没有子块的页面
+            new_page = notion.pages.create(
+                parent={"database_id": NOTION_PAPERS_DATABASE_ID},
+                properties=properties
+            )
+            
+            # 获取新创建页面的 ID
+            page_id = new_page['id']
+            
+            # 然后分批添加子块
+            append_blocks_in_batches(page_id, children)
+            
+            logger.info(f"成功创建论文分析页面并分批添加 {blocks_count} 个块：{page_id}")
+            return page_id
+        else:
+            # 创建页面
+            new_page = notion.pages.create(
+                parent={"database_id": NOTION_PAPERS_DATABASE_ID},
+                properties=properties,
+                children=children
+            )
+            logger.info(f"成功创建论文分析：{new_page['id']}，包含 {len(children)} 个块")
+            return new_page['id']
     
     except Exception as e:
         logger.error(f"创建论文分析时出错：{e}")
@@ -1317,7 +1506,7 @@ def add_paper_metadata_to_properties(properties, metadata):
     # 添加条目类型
     if metadata.get('item_type'):
         properties["ItemType"] = {
-            "rich_text": [{"text": {"content": metadata['item_type']}}]
+            "rich_text": [{"text": {"content": metadata.get('item_type')}}]
         }
     
     return properties
@@ -1655,7 +1844,7 @@ def prepare_metadata_for_notion(metadata):
     
     # 添加条目类型
     # if metadata.get('item_type'):
-    #     notion_metadata['item_type'] = metadata.get('item_type')
+    #     notion_metadata['item_type'] = metadata['item_type']
     
     return notion_metadata
 

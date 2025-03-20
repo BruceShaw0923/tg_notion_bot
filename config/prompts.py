@@ -25,7 +25,7 @@ CONTENT_ANALYSIS_PROMPT = """
 
 # PDF 分析提示（使用 Vision API）
 PDF_ANALYSIS_PROMPT = """
-你是一名专业的学术论文分析助手。{url_context}
+你是一名专业的学术论文分析助手，你需要用英文思考，并用中文回答。{url_context}
 
 请仔细阅读并分析论文内容，提供以下信息，使用 JSON 格式返回：
 
@@ -76,13 +76,104 @@ PDF_ANALYSIS_PROMPT = """
         ## 作者引用的前人工作
         - [列出 3-5 篇相关论文，并简要说明作者如何引用]"
 
-                    
-
-  
 }}
 
 请务必使用以上准确的 JSON 格式返回结果，不要添加其他文字。
 请确保 details 字段是一个字符串，内容使用 Markdown 格式，包含标题、列表等格式。
+"""
+
+# 新的 PDF 分析提示（使用 Vision API）
+NEW_PDF_ANALYSIS_PROMPT = """
+你是一名专业的学术论文分析助手，你需要用英文思考，并用中文回答。{url_context} 
+
+请仔细阅读并分析论文内容，提供以下信息，使用 JSON 格式返回：
+
+{{
+  "title": "论文的完整标题",
+  "brief_summary": "论文的简短摘要（200 字左右）",
+  "insight": "论文的主要发现或贡献（100 字左右）",
+  "details": "
+## Skimming (Phase 1)
+
+**Objective:** 
+[To get a general understanding of the paper's structure, main ideas, and key sections.]
+
+### 1. **👀Introduction and Conclusion:**
+[Read the introduction and conclusion for context and summary of contributions.]
+    * Introduction:
+    * Conclusion:
+### 2. **🧾Section Headings:**
+[Scan through the section headings and subheadings to get an overview of the paper’s structure.]
+    1.  Section 1
+    2.  Section 2
+    3.  Section 3
+### 3. **📊Figures and Tables:**
+[Look at figures, tables, and their captions to grasp the data and visual representations.]
+### 4. **🔑Keywords:** 
+### 5. **🧲IF:** 
+### 6. **🧑Author Information:** 
+
+---
+
+## Detailed Reading (Phase 2)
+
+**Objective:** 
+[To thoroughly understand the paper’s methodology, results, and discussions.]
+
+### 1. **📍Introduction:** 
+[Read the introduction thoroughly to understand the background, problem statement, and objectives.]
+### 2. **🧮Methods:** 
+[Focus on the methods section to understand how the research was conducted.]
+### 3. **📄Results:** 
+[Study the results section for the findings of the study.]
+### 4. **💬Discussion:** 
+[Read the discussion to understand the implications of the results and how they relate to other work in the field.]
+### 5. **🔍References:** 
+[Look at the references to understand the paper’s grounding in existing literature.]
+### 6. **🗂️Supplementary Materials:** 
+[Review supplementary materials such as appendices or additional data sets for critical details.]
+### 7. **🔖Re-read:** 
+[Re-read complex or crucial sections to ensure full comprehension.]
+
+---
+
+## Critical Analysis (Phase 3)
+
+**Objective:** 
+[To critically evaluate the paper’s assumptions, methodologies, and conclusions.]
+
+### 1.  **❗️Assumptions and Limitations:** 
+[Identify the assumptions made in the study and any limitations acknowledged by the authors.]
+    * Assumptions:
+    * Limitations:
+### 2.  **✔️
+[Validity of Methods:** Evaluate the methods used for their validity and appropriateness.]
+### 3.  **🔚Results:** 
+[Critically analyze how the results are interpreted and whether the conclusions are justified.]
+### 4.  **📡Broader Context:** 
+[Consider the broader context and implications of the findings for the field.]
+### 5.  **🧿Future Work:** 
+[Look at suggestions for future work to see how this study could be expanded or improved.]
+### 6.  **❓Bias:** 
+[Identify any potential biases or contentious points that may affect the reliability and validity of the research.]
+### 7.  **🪞Replicability:** 
+[Consider whether the study is easily replicable and if the methods are detailed enough for other researchers to reproduce the results.]
+### 8.  **💡Alternative Interpretations:** 
+[Think about whether the results could be interpreted differently and if other methods might yield the same conclusions.]
+## 📚 专业背景知识
+### 相关领域的最核心的专业术语或概念
+        - [列出 8-10 个英文、（缩写）、中文，并详细解释]
+### 作者引用的前人工作
+        - [列出 3-5 篇相关论文，并简要说明作者如何引用]
+"
+}}
+请务必使用以上准确的 JSON 格式返回结果，不要添加其他文字，"[]"中的内容为对相应部分的解释和提示，在生成内容时，需要将这部分内容删除。确保输出为中文。请使用 Markdown 格式，确保正确使用以下语法：
+                    - 使用 # 表示一级标题，## 表示二级标题 ### 表示三级标题
+                    - 使用 **文本** 表示加粗文本
+                    - 使用 *文本* 表示斜体文本
+                    - 使用 - 表示列表项
+                    - 使用表示引用
+                    - 使用 [文本](链接) 表示超链接
 """
 
 # PDF 文本分析提示（不使用 Vision API，仅文本）
@@ -144,7 +235,7 @@ PDF_TEXT_ANALYSIS_PROMPT = """
                     - 使用 **文本** 表示加粗文本
                     - 使用 *文本* 表示斜体文本
                     - 使用 - 表示列表项
-                    - 使用 > 表示引用
+                    - 使用表示引用
                     - 使用 [文本](链接) 表示超链接"
 }}
 
@@ -152,7 +243,104 @@ PDF_TEXT_ANALYSIS_PROMPT = """
 PDF 内容如下：
 {text}
 """
+# 新的 PDF 文本分析提示（不使用 Vision API，仅文本）
+NEW_PDF_TEXT_ANALYSIS_PROMPT = """
+你是一名专业的学术论文分析助手。请分析下面从 PDF 中提取的文本内容。
+由于是文本提取，可能会有格式问题，请尽力理解内容。
 
+请提供以下信息，使用 JSON 格式返回：
+
+{{
+  "title": "论文的完整标题",
+  "brief_summary": "论文的简短摘要（200 字左右）",
+  "insight": "论文的主要发现或贡献（100 字左右）",
+  "details": "
+## Skimming (Phase 1)
+
+**Objective:** 
+[To get a general understanding of the paper's structure, main ideas, and key sections.]
+
+### 1. **👀Introduction and Conclusion:**
+[Read the introduction and conclusion for context and summary of contributions.]
+    * Introduction:
+    * Conclusion:
+### 2. **🧾Section Headings:**
+[Scan through the section headings and subheadings to get an overview of the paper’s structure.]
+    1.  Section 1
+    2.  Section 2
+    3.  Section 3
+### 3. **📊Figures and Tables:**
+[Look at figures, tables, and their captions to grasp the data and visual representations.]
+### 4. **🔑Keywords:** 
+### 5. **🧲IF:** 
+### 6. **🧑Author Information:** 
+
+---
+
+## Detailed Reading (Phase 2)
+
+**Objective:** 
+[To thoroughly understand the paper’s methodology, results, and discussions.]
+
+### 1. **📍Introduction:** 
+[Read the introduction thoroughly to understand the background, problem statement, and objectives.]
+### 2. **🧮Methods:** 
+[Focus on the methods section to understand how the research was conducted.]
+### 3. **📄Results:** 
+[Study the results section for the findings of the study.]
+### 4. **💬Discussion:** 
+[Read the discussion to understand the implications of the results and how they relate to other work in the field.]
+### 5. **🔍References:** 
+[Look at the references to understand the paper’s grounding in existing literature.]
+### 6. **🗂️Supplementary Materials:** 
+[Review supplementary materials such as appendices or additional data sets for critical details.]
+### 7. **🔖Re-read:** 
+[Re-read complex or crucial sections to ensure full comprehension.]
+
+---
+
+## Critical Analysis (Phase 3)
+
+**Objective:** 
+[To critically evaluate the paper’s assumptions, methodologies, and conclusions.]
+
+### 1.  **❗️Assumptions and Limitations:** 
+[Identify the assumptions made in the study and any limitations acknowledged by the authors.]
+    * Assumptions:
+    * Limitations:
+### 2.  **✔️
+[Validity of Methods:** Evaluate the methods used for their validity and appropriateness.]
+### 3.  **🔚Results:** 
+[Critically analyze how the results are interpreted and whether the conclusions are justified.]
+### 4.  **📡Broader Context:** 
+[Consider the broader context and implications of the findings for the field.]
+### 5.  **🧿Future Work:** 
+[Look at suggestions for future work to see how this study could be expanded or improved.]
+### 6.  **❓Bias:** 
+[Identify any potential biases or contentious points that may affect the reliability and validity of the research.]
+### 7.  **🪞Replicability:** 
+[Consider whether the study is easily replicable and if the methods are detailed enough for other researchers to reproduce the results.]
+### 8.  **💡Alternative Interpretations:** 
+[Think about whether the results could be interpreted differently and if other methods might yield the same conclusions.]
+## 📚 专业背景知识
+### 相关领域的最核心的专业术语或概念
+        - [列出 8-10 个英文、（缩写）、中文，并详细解释]
+### 作者引用的前人工作
+        - [列出 3-5 篇相关论文，并简要说明作者如何引用]
+"
+}}
+
+请严格按照上述 JSON 格式返回结果，不要有任何其他文字，确保 details 字段是一个字符串而不是嵌套的对象，请使用 Markdown 格式，确保正确使用以下语法：
+                    - 使用 # 表示一级标题，## 表示二级标题 ### 表示三级标题
+                    - 使用 **文本** 表示加粗文本
+                    - 使用 *文本* 表示斜体文本
+                    - 使用 - 表示列表项
+                    - 使用表示引用
+                    - 使用 [文本](链接) 表示超链接
+确保输出为中文。
+PDF 内容如下：
+{text}
+"""
 
 # 更新后的周报提示
 WEEKLY_SUMMARY_PROMPT = """
