@@ -11,6 +11,7 @@
 - AI自动分析内容并生成摘要和标签
 - 支持Zotero论文同步
 - 自动生成周报总结
+- 处理带图片的消息（仅保存文字部分）
 
 ## 项目结构
 
@@ -82,6 +83,11 @@ TG-Notion Bot 是一个 Telegram 机器人，集成了 Notion、Zotero 和 Googl
 
    - 周报会自动生成
    - 也可以使用 `/weekly` 手动触发
+6. **处理带图片的消息**
+   - 发送带图片的消息时，仅文字部分会被保存
+   - 图片不会上传至Notion
+   - 消息中会标注"[此内容来自包含图片的消息]"
+   - 如果发送不带文字的图片，机器人会提示添加说明后重新发送
 
 ## 配置要求
 
@@ -172,6 +178,7 @@ python main.py
 * 发送 PDF 文件将解析为学术论文并保存到专用数据库
 * 发送纯 URL 会自动提取网页内容
 * 使用 `#todo` 标签可以快速添加任务到待办事项数据库
+* 发送带图片的消息时，只有文字部分会被处理并保存到Notion，图片本身不会被上传
 
 ### Telegram 命令列表
 
@@ -183,25 +190,52 @@ python main.py
 
 ```
 .
-├── config.py          # 配置文件
+├── config/            # 配置目录
+│   ├── __init__.py    # 配置初始化
+│   └── prompts.py     # 提示模板配置
 ├── main.py            # 主程序
-├── models/            # 数据模型
 ├── services/          # 服务模块
-│   ├── gemini_service.py  # AI内容分析服务
-│   ├── notion_service.py  # Notion集成服务
-│   ├── telegram/          # Telegram机器人服务
-│   │   ├── __init__.py    # 导出主要功能
-│   │   ├── bot.py         # 机器人初始化和配置
-│   │   ├── handlers/      # 消息处理模块
-│   │   └── utils.py       # Telegram特有工具函数
-│   ├── telegram_service.py # 兼容层
+│   ├── gemini_service/    # Gemini AI服务
+│   │   ├── __init__.py
+│   │   ├── client.py      # API客户端
+│   │   ├── content_analyzer.py  # 内容分析
+│   │   ├── pdf_analyzer.py      # PDF分析
+│   │   ├── weekly_summary.py    # 周报生成
+│   │   └── utils.py       # 工具函数
+│   ├── notion_service/    # Notion服务
+│   │   ├── __init__.py
+│   │   ├── client.py      # API客户端
+│   │   ├── content_converter.py # 内容转换
+│   │   └── database/      # 数据库操作
+│   │       ├── common.py  # 通用操作
+│   │       ├── papers.py  # 论文数据库
+│   │       └── todo.py    # 待办数据库
+│   ├── telegram_service/  # Telegram服务
+│   │   ├── __init__.py
+│   │   ├── client.py      # 机器人客户端
+│   │   ├── handlers/      # 消息处理器
+│   │   │   ├── command_handlers.py    # 命令处理
+│   │   │   ├── message_handlers.py    # 消息处理
+│   │   │   ├── pdf_handlers.py        # PDF处理
+│   │   │   ├── todo_handlers.py       # 待办处理
+│   │   │   └── url_handlers.py        # URL处理
+│   │   └── utils.py       # 工具函数
 │   ├── url_service.py     # URL内容提取服务
-│   └── weekly_report.py   # 周报生成服务
+│   └── zotero_service/    # Zotero服务
+│       ├── __init__.py
+│       ├── client.py      # API客户端
+│       ├── items.py       # 条目操作
+│       └── utils.py       # 工具函数
 ├── utils/             # 通用工具
-├── handlers/          # 消息处理程序
+│   ├── helpers.py     # 帮助函数
+│   ├── notion_helper.py   # Notion工具
+│   ├── ssl_helper.py      # SSL配置
+│   └── zotero_debug.py    # Zotero调试
+├── scripts/           # 脚本文件
+├── tests/             # 测试文件
 ├── docs/              # 文档
-├── docker-compose.yml # Docker 配置
-└── Dockerfile         # Docker 构建文件
+├── docker-compose.yml # Docker配置
+└── Dockerfile         # Docker构建文件
 ```
 
 ## 高级部署
@@ -260,7 +294,7 @@ python test.py
 
 新增
 
-- [ ] 图片插入
+- [X] 图片消息处理（仅保存文字部分，不上传图片）
 - [ ] 标签识别，并放入Tags属性
 - [ ] epub/书籍通过标签建立图书馆
 - [X] 周报建立notion内链

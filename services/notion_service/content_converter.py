@@ -444,27 +444,52 @@ def create_text_blocks_from_content(content, block_type="paragraph", emoji=None,
     if not content:
         return []
     
-    blocks = []
-    # 使用 split_text 函数分割文本，确保每部分不超过 2000 字符
-    text_parts = split_text(content, 2000)
-    
-    for i, part in enumerate(text_parts):
-        block = {
-            "object": "block",
-            block_type: {
-                "rich_text": [{"text": {"content": part}}]
+    # 根据块类型构建适当的 Markdown 格式
+    if block_type == "paragraph":
+        markdown_content = content
+    elif block_type == "quote":
+        # 将每行前面添加 > 符号以创建引用块
+        markdown_content = "\n".join([f"> {line}" for line in content.split("\n")])
+    elif block_type == "callout":
+        # 由于 convert_to_notion_blocks 不直接支持 callout，我们仍然使用原始方法
+        blocks = []
+        text_parts = split_text(content, 2000)
+        
+        for i, part in enumerate(text_parts):
+            block = {
+                "object": "block",
+                "callout": {
+                    "rich_text": [{"text": {"content": part}}]
+                }
             }
-        }
-        
-        # 仅为第一个块添加 emoji (如果提供)
-        if block_type == "callout" and emoji and i == 0:
-            block[block_type]["icon"] = {"emoji": emoji}
-        
-        # 添加颜色 (如果提供)
-        if color:
-            block[block_type]["color"] = color
             
-        blocks.append(block)
+            if emoji and i == 0:
+                block["callout"]["icon"] = {"emoji": emoji}
+            
+            if color:
+                block["callout"]["color"] = color
+                
+            blocks.append(block)
+        return blocks
+    else:
+        # 默认处理为普通段落
+        markdown_content = content
+    
+    # 使用 convert_to_notion_blocks 处理 Markdown 格式的内容
+    blocks = convert_to_notion_blocks(markdown_content)
+    
+    # 如果需要添加颜色属性
+    if color and blocks:
+        for block in blocks:
+            # 确定正确的块类型键
+            block_key = None
+            for key in block:
+                if key != "object" and isinstance(block[key], dict):
+                    block_key = key
+                    break
+            
+            if block_key:
+                block[block_key]["color"] = color
     
     return blocks
 

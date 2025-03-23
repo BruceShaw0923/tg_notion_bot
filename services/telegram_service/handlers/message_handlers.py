@@ -20,8 +20,25 @@ def process_message(update: Update, context: CallbackContext) -> None:
         return
     
     message = update.message
+    
+    # 检查消息是否包含图片
+    contains_photo = message.photo and len(message.photo) > 0
+    
+    # 仅获取文本内容，完全忽略图片数据
     content = message.text or message.caption or ""
     created_at = message.date
+    
+    # 如果消息包含图片，添加前缀说明，但不处理图片数据本身
+    if contains_photo:
+        logger.info("接收到包含图片的消息，将只处理文字部分，完全忽略图片数据")
+        if content:
+            content = f"[此内容来自包含图片的消息] {content}"
+        else:
+            update.message.reply_text("⚠️ 收到图片但没有文字说明，请添加说明后重新发送")
+            return
+    
+    # 图片数据从不会被传递到后续处理函数
+    # 接下来的所有处理都只针对文本
     
     # 检查是否有 #todo 标签
     if "#todo" in content:
@@ -52,8 +69,9 @@ def process_message(update: Update, context: CallbackContext) -> None:
         # 存入 Notion，但使用原始内容作为摘要
         try:
             from services.notion_service import add_to_notion
+            # 注意：此处传递的 content 只包含文本，不包含任何图片数据
             page_id = add_to_notion(
-                content=content,
+                content=content,  # 只传递文本内容
                 summary=content,  # 直接使用原始内容作为摘要
                 tags=analysis_result["tags"],
                 url=url,
