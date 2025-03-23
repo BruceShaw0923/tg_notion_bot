@@ -29,7 +29,7 @@ def extract_url_from_text(text):
 
 def extract_all_urls_from_text(text):
     """
-    从文本中提取所有 URL
+    从文本中提取所有 URL，包括括号内的 URL 和 Telegram 格式化链接
     
     参数：
     text (str): 要分析的文本
@@ -37,29 +37,38 @@ def extract_all_urls_from_text(text):
     返回：
     list: 提取的 URL 列表
     """
-    if not text:
-        return []
+    import re
     
-    # 增强的 URL 正则表达式，能识别括号包裹的 URL 和标准 URL
-    # 先匹配标准 URL 格式
-    standard_url_pattern = r'(?:https?://|www\.)[^\s\)\]\'"]+(?:\.[^\s\)\]\'"]+)+[^\s\)\]\'".,;:]+'
-    # 匹配括号中的 URL 格式 - 专门处理 (http://example.com) 这种情况
-    bracketed_url_pattern = r'\((?:https?://|www\.)[^\s\)]+\)'
+    # 使用多个正则表达式模式
+    # 1. 标准 URL 模式
+    standard_url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
     
-    # 查找所有标准 URL
+    # 2. 括号内 URL 模式 - 特别匹配 (http://example.com) 格式
+    bracketed_url_pattern = r'\((http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+)\)'
+    
+    # 3. Telegram/Markdown 格式化链接 - [文本](URL)
+    formatted_link_pattern = r'\[.+?\]\((http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+)\)'
+    
+    # 提取各种格式的 URLs
     standard_urls = re.findall(standard_url_pattern, text)
+    bracketed_urls = re.findall(bracketed_url_pattern, text)
+    formatted_urls = re.findall(formatted_link_pattern, text)
     
-    # 查找所有括号包裹的 URL 并去除括号
-    bracketed_urls_with_brackets = re.findall(bracketed_url_pattern, text)
-    bracketed_urls = [url[1:-1] for url in bracketed_urls_with_brackets] # 移除首尾的括号
+    # 合并结果，确保所有 URL 都被识别
+    all_urls = standard_urls + bracketed_urls + formatted_urls
     
-    # 合并并去重
-    all_urls = []
-    for url in standard_urls + bracketed_urls:
-        if url not in all_urls:
-            all_urls.append(url)
+    # 去重
+    unique_urls = list(dict.fromkeys(all_urls))
     
-    return all_urls
+    # 清理 URL，移除可能的后缀标点
+    cleaned_urls = []
+    for url in unique_urls:
+        # 移除 URL 末尾的标点符号
+        while url and url[-1] in '.,;:?!':
+            url = url[:-1]
+        cleaned_urls.append(url)
+    
+    return cleaned_urls
 
 def format_datetime(dt):
     """格式化日期时间"""
@@ -68,19 +77,34 @@ def format_datetime(dt):
     return str(dt)
 
 def is_url_only(text):
-    """检查文本是否只包含 URL"""
-    if not text:
-        return False
+    """
+    检查文本是否只包含 URL（可能包含在括号内）
     
-    # 清理文本中的空白字符
-    cleaned_text = text.strip()
+    参数：
+    text (str): 要检查的文本
     
-    # 检查是否只有一个 URL
-    urls = extract_all_urls_from_text(cleaned_text)
-    if len(urls) == 1 and urls[0].strip() == cleaned_text:
+    返回：
+    bool: 如果文本仅为 URL 则为 True
+    """
+    import re
+    
+    # 去除空白字符
+    text = text.strip()
+    
+    # 检查是否是标准 URL
+    standard_url_pattern = r'^http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+$'
+    
+    # 检查是否是括号内 URL
+    bracketed_url_pattern = r'^\((http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+)\)$'
+    
+    is_standard_url = bool(re.match(standard_url_pattern, text))
+    bracketed_match = re.match(bracketed_url_pattern, text)
+    
+    # 如果是括号内 URL，返回提取的 URL
+    if bracketed_match:
         return True
     
-    return False
+    return is_standard_url
 
 def download_file(url, file_extension=None):
     """从 URL 下载文件到临时位置
