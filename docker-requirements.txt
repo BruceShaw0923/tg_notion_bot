@@ -13,4 +13,4 @@ requests[socks]  # 确保 requests 包含 socks 支持
 beautifulsoup4==4.10.0
 pypdf>=3.0.0
 openai>=0.27.0
-pyzotero>=1.5.5  # 可选，如果需要更多 Zotero API 功能
+pyzotero>=1.5.5  # 必需，用于 Zotero API 功能

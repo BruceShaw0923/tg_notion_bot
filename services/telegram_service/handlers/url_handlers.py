@@ -1,28 +1,16 @@
-"""
-URL 处理器模块
-
-此模块包含处理 URL 相关消息的函数。
-"""
-
 from telegram import Update
-from telegram.ext import CallbackContext
 import logging
-import os
-from services.notion_service import add_to_notion, add_to_papers_database, is_pdf_url, download_pdf
-from services.gemini_service import analyze_content, analyze_pdf_content
 from services.url_service import extract_url_content
+from services.gemini_service import analyze_content
+from services.notion_service import add_to_notion
+from .pdf_handlers import handle_pdf_url
+from services.notion_service import is_pdf_url
 
 # 配置日志
 logger = logging.getLogger(__name__)
 
 def handle_url_message(update: Update, url, created_at):
-    """处理纯 URL 消息
-    
-    Args:
-        update: Telegram 更新对象
-        url: 要处理的 URL
-        created_at: 消息创建时间
-    """
+    """处理纯 URL 消息"""
     # 首先检查是否是 PDF URL
     if is_pdf_url(url):
         update.message.reply_text("检测到 PDF 链接，正在下载并解析论文内容，请稍候...")
@@ -58,14 +46,7 @@ def handle_url_message(update: Update, url, created_at):
         update.message.reply_text(f"⚠️ 处理 {url} 时出错：{str(e)}")
 
 def handle_multiple_urls_message(update: Update, content, urls, created_at):
-    """处理包含多个 URL 的消息
-    
-    Args:
-        update: Telegram 更新对象
-        content: 消息内容
-        urls: URL 列表
-        created_at: 消息创建时间
-    """
+    """处理包含多个 URL 的消息"""
     update.message.reply_text(f"检测到 {len(urls)} 个链接，正在处理消息内容...")
     
     # 创建一个包含原始消息和 URL 标记的文本
@@ -101,54 +82,3 @@ def handle_multiple_urls_message(update: Update, content, urls, created_at):
     except Exception as e:
         logger.error(f"处理多 URL 消息时出错：{e}")
         update.message.reply_text(f"⚠️ 处理消息时出错：{str(e)}")
-
-def handle_pdf_url(update: Update, url, created_at):
-    """处理 PDF URL，下载并解析为论文
-    
-    Args:
-        update: Telegram 更新对象
-        url: PDF 的 URL
-        created_at: 消息创建时间
-    """
-    try:
-        # 从 URL 下载 PDF
-        pdf_path, file_size = download_pdf(url)
-        
-        if not pdf_path:
-            update.message.reply_text(f"⚠️ 无法下载 {url} 文件")
-            return
-        
-        # 提取文件名
-        import os
-        from urllib.parse import urlparse
-        parsed_url = urlparse(url)
-        filename = os.path.basename(parsed_url.path) or "document.pdf"
-        
-        # 使用 Gemini 分析 PDF 内容
-        pdf_analysis = analyze_pdf_content(pdf_path)
-        
-        # 添加到论文数据库
-        page_id = add_to_papers_database(
-            title=filename,
-            analysis=pdf_analysis,
-            created_at=created_at,
-            pdf_url=url  # 使用原始 URL，而不是本地路径
-        )
-        
-        # 清理临时文件
-        try:
-            os.unlink(pdf_path)
-        except:
-            pass
-        
-        update.message.reply_text(f"✅ {url} 论文已成功解析并添加到 Notion 数据库！\n包含详细分析和原始 PDF 文件链接。")
-    
-    except Exception as e:
-        logger.error(f"处理 PDF {url} 时出错：{e}")
-        update.message.reply_text(f"⚠️ 处理 PDF {url} 时出错：{str(e)}")
-        # 确保清理临时文件
-        try:
-            if 'pdf_path' in locals() and pdf_path and os.path.exists(pdf_path):
-                os.unlink(pdf_path)
-        except:
-            pass

@@ -1,9 +1,3 @@
-"""
-待办事项处理器模块
-
-此模块包含处理待办事项消息的函数。
-"""
-
 from telegram import Update
 import logging
 import re
@@ -15,13 +9,7 @@ from services.notion_service import add_to_todo_database
 logger = logging.getLogger(__name__)
 
 def handle_todo_message(update: Update, content, created_at):
-    """处理带有#todo 标签的消息
-    
-    Args:
-        update: Telegram 更新对象
-        content: 消息内容
-        created_at: 消息创建时间
-    """
+    """处理带有 #todo 标签的消息"""
     try:
         # 提取持续时间参数（如果有）
         duration_match = re.search(r'#todo\s+(\d+(\.\d+)?h)', content, re.IGNORECASE)

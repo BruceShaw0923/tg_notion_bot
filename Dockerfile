@@ -13,8 +13,10 @@ RUN pip install --no-cache-dir -r docker-requirements.txt && \
     pip install --no-cache-dir PySocks requests[socks] && \
     # 禁用Python警告
     pip install --no-cache-dir --upgrade urllib3==1.26.15 && \
+    # 确保pyzotero已安装（使用引号避免shell解析版本号）
+    pip install --no-cache-dir "pyzotero>=1.5.5" && \
     # 验证安装
-    python -c "import socks; print('PySocks installed successfully')"
+    python -c "import socks; import pyzotero; print('PySocks and pyzotero installed successfully')"
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1

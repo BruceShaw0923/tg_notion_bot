@@ -1,14 +1,7 @@
-"""
-Telegram 工具函数模块
-
-此模块提供了 Telegram 机器人使用的各种工具函数。
-"""
-
 import os
 import re
 import logging
 
-# 配置日志
 logger = logging.getLogger(__name__)
 
 def extract_metadata_from_filename(filename):
@@ -16,11 +9,11 @@ def extract_metadata_from_filename(filename):
     尝试从文件名提取元数据，适用于常见的学术论文命名模式
     例如：Author_Year_Title.pdf 或 Title_Journal_Year.pdf
     
-    Args:
-        filename (str): PDF 文件名
+    参数：
+    filename (str): PDF 文件名
     
-    Returns:
-        dict: 提取的元数据
+    返回：
+    dict: 提取的元数据
     """
     metadata = {}
     
@@ -46,11 +39,11 @@ def enrich_analysis_with_metadata(analysis: dict, metadata: dict) -> dict:
     """
     将 Zotero 元数据添加到 Gemini 分析结果
     
-    Args:
+    参数：
         analysis: Gemini 分析结果
         metadata: Zotero 元数据
         
-    Returns:
+    返回：
         enriched_analysis: 添加元数据后的分析结果
     """
     result = analysis.copy() if analysis else {}
@@ -97,11 +90,11 @@ def prepare_metadata_for_notion(metadata):
     """
     从 Zotero 元数据准备 Notion 需要的元数据格式
     
-    Args:
-        metadata (dict): Zotero 元数据
+    参数：
+    metadata (dict): Zotero 元数据
     
-    Returns:
-        dict: Notion 格式的元数据
+    返回：
+    dict: Notion 格式的元数据
     """
     notion_metadata = {}
     

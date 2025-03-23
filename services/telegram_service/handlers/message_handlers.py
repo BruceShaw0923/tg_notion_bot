@@ -1,32 +1,21 @@
-"""
-消息处理器模块
-
-此模块包含处理基本消息的函数。
-"""
-
 from telegram import Update
 from telegram.ext import CallbackContext
 import logging
 from config import ALLOWED_USER_IDS
+
+from utils.helpers import is_url_only, extract_all_urls_from_text
 from services.gemini_service import analyze_content
-from services.notion_service import add_to_notion
-# 修复导入路径
-from services.telegram.handlers.url import handle_url_message, handle_multiple_urls_message
-from services.telegram.handlers.todo import handle_todo_message
-from utils.helpers import extract_all_urls_from_text, is_url_only
+
+# 导入处理器
+from .url_handlers import handle_url_message, handle_multiple_urls_message
+from .todo_handlers import handle_todo_message
+from .pdf_handlers import handle_pdf_document
 
 # 配置日志
 logger = logging.getLogger(__name__)
 
 def process_message(update: Update, context: CallbackContext) -> None:
-    """处理收到的消息
-    
-    处理各种类型的消息，包括文本、图片或带有标签的消息。
-    
-    Args:
-        update: Telegram 更新对象
-        context: 回调上下文
-    """
+    """处理收到的消息"""
     if update.effective_user.id not in ALLOWED_USER_IDS:
         return
     
@@ -62,6 +51,7 @@ def process_message(update: Update, context: CallbackContext) -> None:
         
         # 存入 Notion，但使用原始内容作为摘要
         try:
+            from services.notion_service import add_to_notion
             page_id = add_to_notion(
                 content=content,
                 summary=content,  # 直接使用原始内容作为摘要
@@ -80,6 +70,7 @@ def process_message(update: Update, context: CallbackContext) -> None:
     
     # 存入 Notion
     try:
+        from services.notion_service import add_to_notion
         page_id = add_to_notion(
             content=content,
             summary=analysis_result["summary"],
@@ -91,3 +82,17 @@ def process_message(update: Update, context: CallbackContext) -> None:
     except Exception as e:
         logger.error(f"添加到 Notion 时出错：{e}")
         update.message.reply_text(f"⚠️ 保存到 Notion 时出错：{str(e)}")
+
+def process_document(update: Update, context: CallbackContext) -> None:
+    """处理文档文件，特别是 PDF"""
+    if update.effective_user.id not in ALLOWED_USER_IDS:
+        return
+    
+    message = update.message
+    
+    # 检查是否是 PDF 文件
+    if message.document.file_name.lower().endswith('.pdf'):
+        handle_pdf_document(update, context)
+    else:
+        # 对于非 PDF 文件，使用常规处理
+        process_message(update, context)

@@ -1,9 +1,3 @@
-"""
-命令处理器模块
-
-此模块包含处理 Telegram 机器人命令的函数。
-"""
-
 from telegram import Update
 from telegram.ext import CallbackContext
 import logging
@@ -79,15 +73,3 @@ def weekly_report_command(update: Update, context: CallbackContext) -> None:
     except Exception as e:
         logger.error(f"生成周报时出错：{e}")
         update.message.reply_text(f"⚠️ 生成周报时出错：{str(e)}")
-
-def error_handler(update, context):
-    """处理 Telegram 机器人运行中的错误"""
-    # 日志记录错误详情
-    logger.error(f"更新 {update} 导致错误：{context.error}")
-    
-    # 如果可能，向用户发送错误通知
-    if update and update.effective_chat:
-        context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"抱歉，处理您的请求时发生了错误。错误已被记录，我们会尽快解决。"
-        )

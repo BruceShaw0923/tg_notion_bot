@@ -1,3 +1,19 @@
+# TG-Notion 机器人
+
+这是一个Telegram与Notion集成的自动化机器人，可以帮助你快速保存信息、链接和文件到Notion数据库。
+
+## 功能特点
+
+- 发送消息自动保存到Notion
+- 发送URL自动提取网页内容
+- 发送PDF文件自动解析为论文
+- 使用#todo标签添加任务到待办事项
+- AI自动分析内容并生成摘要和标签
+- 支持Zotero论文同步
+- 自动生成周报总结
+
+## 项目结构
+
 # TG-Notion Bot
 
 TG-Notion Bot 是一个 Telegram 机器人，集成了 Notion、Zotero 和 Google Gemini 等多种服务，帮助用户高效管理知识和工作流。
@@ -171,7 +187,17 @@ python main.py
 ├── main.py            # 主程序
 ├── models/            # 数据模型
 ├── services/          # 服务模块
-├── utils/             # 工具函数
+│   ├── gemini_service.py  # AI内容分析服务
+│   ├── notion_service.py  # Notion集成服务
+│   ├── telegram/          # Telegram机器人服务
+│   │   ├── __init__.py    # 导出主要功能
+│   │   ├── bot.py         # 机器人初始化和配置
+│   │   ├── handlers/      # 消息处理模块
+│   │   └── utils.py       # Telegram特有工具函数
+│   ├── telegram_service.py # 兼容层
+│   ├── url_service.py     # URL内容提取服务
+│   └── weekly_report.py   # 周报生成服务
+├── utils/             # 通用工具
 ├── handlers/          # 消息处理程序
 ├── docs/              # 文档
 ├── docker-compose.yml # Docker 配置
