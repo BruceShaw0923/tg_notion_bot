@@ -4,12 +4,14 @@ PDF 分析模块
 提供 PDF 文档分析功能，支持提取内容、分析论文等操作
 """
 
+import hashlib
 import json
 import logging
 import os
 import re
 
 from config.prompts import NEW_PDF_ANALYSIS_PROMPT, NEW_PDF_TEXT_ANALYSIS_PROMPT
+from utils.gemini_cache import get_from_cache, save_to_cache
 
 from .client import GEMINI_AVAILABLE, model, vision_model
 
@@ -32,6 +34,14 @@ def analyze_pdf_content(pdf_path, url=None):
         return None
 
     try:
+        # 计算文件哈希作为缓存键
+        file_hash = calculate_file_hash(pdf_path)
+        cached_result = get_from_cache(file_hash, "pdf_analysis")
+
+        if cached_result:
+            logger.info(f"使用缓存的 PDF 分析结果：{os.path.basename(pdf_path)}")
+            return cached_result
+
         # 检查文件大小 - Gemini 有输入限制
         file_size = os.path.getsize(pdf_path)
         if file_size > 20 * 1024 * 1024:  # 20MB
@@ -97,6 +107,9 @@ def analyze_pdf_content(pdf_path, url=None):
                 if field not in result:
                     result[field] = ""
 
+            # 缓存结果
+            save_to_cache(file_hash, result, "pdf_analysis")
+
             return result
 
         except Exception as e:
@@ -115,6 +128,33 @@ def analyze_pdf_content(pdf_path, url=None):
             "details": f"处理过程中出错：{str(e)}",
             "insight": "处理失败",
         }
+
+
+def calculate_file_hash(file_path, block_size=8192):
+    """
+    计算文件的 MD5 哈希值
+
+    参数：
+        file_path: 文件路径
+        block_size: 读取块大小
+
+    返回：
+        str: 文件的 MD5 哈希值
+    """
+    md5 = hashlib.md5()
+
+    try:
+        with open(file_path, "rb") as f:
+            for block in iter(lambda: f.read(block_size), b""):
+                md5.update(block)
+        return md5.hexdigest()
+    except Exception as e:
+        logger.error(f"计算文件哈希失败：{e}")
+        # 使用文件名和大小作为备用键
+        try:
+            return f"{os.path.basename(file_path)}_{os.path.getsize(file_path)}"
+        except Exception:
+            return os.path.basename(file_path)
 
 
 def safe_extract_fields(text):

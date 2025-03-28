@@ -2,19 +2,20 @@ import logging
 
 import requests
 from bs4 import BeautifulSoup
+from markdownify import markdownify as md
 
 logger = logging.getLogger(__name__)
 
 
 def extract_url_content(url):
     """
-    从 URL 中提取网页内容
+    从 URL 中提取网页内容并转换为 Markdown 格式
 
     参数：
     url (str): 需要提取内容的 URL
 
     返回：
-    str: 提取的网页内容
+    str: 提取并转换为 Markdown 格式的网页内容
     """
     try:
         headers = {
@@ -31,37 +32,53 @@ def extract_url_content(url):
         # 提取标题
         title = soup.title.string if soup.title else ""
 
-        # 提取正文内容
-        # 首先尝试提取 article 标签
-        article = soup.find("article")
-        if article:
-            content = article.get_text(separator="\n", strip=True)
-        else:
-            # 如果没有 article 标签，尝试提取主要内容区域
-            main_content = (
-                soup.find("main")
-                or soup.find(id="content")
-                or soup.find(class_="content")
-            )
-            if main_content:
-                content = main_content.get_text(separator="\n", strip=True)
+        # 提取正文内容 - 首先尝试找到主要内容区域
+        main_content = None
+        for selector in [
+            "article",
+            "main",
+            "div#content",
+            "div.content",
+            "div.post",
+            "div.article",
+            "body",
+        ]:
+            if selector.startswith("div"):
+                # 处理带 class 或 id 的选择器
+                attrs = {}
+                if "." in selector:
+                    tag, cls = selector.split(".")
+                    attrs["class"] = cls
+                elif "#" in selector:
+                    tag, id = selector.split("#")
+                    attrs["id"] = id
+                element = soup.find(tag, attrs)
             else:
-                # 最后尝试提取 body 所有文本，但过滤掉脚本和样式
-                for script in soup(["script", "style"]):
-                    script.extract()
-                content = (
-                    soup.body.get_text(separator="\n", strip=True) if soup.body else ""
-                )
+                element = soup.find(selector)
 
-        # 格式化内容
-        formatted_content = f"# {title}\n\n{content}"
+            if element:
+                main_content = element
+                break
 
-        # 如果内容太长，进行截断
-        if len(formatted_content) > 10000:
-            formatted_content = (
-                formatted_content[:10000] + "...\n\n[内容已截断，原始内容过长]"
-            )
+        # 如果没找到主要内容区域，使用整个 body
+        if not main_content:
+            main_content = soup.body if soup.body else soup
 
+        # 从内容中移除不需要的元素
+        for element in main_content.find_all(
+            ["script", "style", "nav", "footer", "header"]
+        ):
+            element.extract()
+
+        # 将 HTML 转换为 Markdown
+        markdown_content = md(str(main_content), heading_style="ATX")
+
+        # 格式化内容，确保标题在最前面
+        formatted_content = f"# {title}\n\n{markdown_content}"
+
+        # 移除内容截断代码 - 让 Notion Service 的分批处理机制处理长内容
+
+        logger.info(f"成功提取并转换 URL 内容，长度：{len(formatted_content)} 字符")
         return formatted_content
 
     except Exception as e:

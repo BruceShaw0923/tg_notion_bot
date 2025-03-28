@@ -30,7 +30,8 @@ def start(update: Update, context: CallbackContext) -> None:
         "- /sync_papers - 同步最新论文\n"
         "- /sync_days - 同步近期论文\n"
         "\n"
-        "输入 /help 查看详细使用说明"
+        "输入 /help 查看详细使用说明",
+        parse_mode=None,  # 禁用 Markdown 解析
     )
 
 
@@ -45,8 +46,9 @@ def help_command(update: Update, context: CallbackContext) -> None:
         "2. 发送纯链接时会自动提取网页内容并分析\n"
         "3. 发送 PDF 文件会进行论文解析并存入专用数据库\n"
         "4. 在消息中使用 #todo 标签将任务添加到待办事项列表\n"
-        "5. 内容会被 AI 自动分析并生成摘要和标签\n"
-        "6. 每周自动生成周报总结\n"
+        "5. 使用 #test 标签可以测试机器人，直接回显原始消息\n"
+        "6. 内容会被 AI 自动分析并生成摘要和标签\n"
+        "7. 每周自动生成周报总结\n"
         "\n"
         "Zotero 相关命令:\n"
         "- /collections - 列出所有 Zotero 收藏集\n"
@@ -56,7 +58,8 @@ def help_command(update: Update, context: CallbackContext) -> None:
         "其他命令:\n"
         "- /start - 显示欢迎信息\n"
         "- /help - 显示此帮助信息\n"
-        "- /weekly - 手动触发生成本周周报"
+        "- /weekly - 手动触发生成本周周报",
+        parse_mode=None,  # 禁用 Markdown 解析
     )
 
 
@@ -67,14 +70,22 @@ def weekly_report_command(update: Update, context: CallbackContext) -> None:
 
     from services.weekly_report import generate_weekly_report
 
-    update.message.reply_text("正在生成本周周报，请稍候...")
+    update.message.reply_text(
+        "正在生成本周周报，请稍候...", parse_mode=None
+    )  # 禁用 Markdown 解析
 
     try:
         report_url = generate_weekly_report()
         if report_url:
-            update.message.reply_text(f"✅ 周报已生成！查看链接：{report_url}")
+            update.message.reply_text(
+                f"✅ 周报已生成！查看链接：{report_url}", parse_mode=None
+            )  # 禁用 Markdown 解析
         else:
-            update.message.reply_text("⚠️ 本周没有内容，无法生成周报")
+            update.message.reply_text(
+                "⚠️ 本周没有内容，无法生成周报", parse_mode=None
+            )  # 禁用 Markdown 解析
     except Exception as e:
         logger.error(f"生成周报时出错：{e}")
-        update.message.reply_text(f"⚠️ 生成周报时出错：{str(e)}")
+        update.message.reply_text(
+            f"⚠️ 生成周报时出错：{str(e)}", parse_mode=None
+        )  # 禁用 Markdown 解析

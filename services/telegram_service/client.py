@@ -2,6 +2,7 @@ import logging
 import os
 
 import urllib3
+from telegram import ParseMode
 from telegram.ext import CommandHandler, Filters, MessageHandler, Updater
 
 from config import ALLOWED_USER_IDS, TELEGRAM_BOT_TOKEN
@@ -85,6 +86,12 @@ def setup_telegram_bot(updater=None):
         # 创建 Updater 并提供网络设置
         updater = Updater(TELEGRAM_BOT_TOKEN, request_kwargs=request_kwargs)
         dispatcher = updater.dispatcher
+
+        # 设置默认解析模式为 Markdown
+        dispatcher.bot.defaults = dispatcher.bot._defaults = Updater.bot_defaults.copy(
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        logger.info("设置默认消息格式为 Markdown")
 
     # 导入处理函数
     from handlers.paper_handlers import (

@@ -4,10 +4,13 @@
 使用 Google Gemini API 分析文本内容
 """
 
+import json
 import logging
+import re
 
 from config import PREDEFINED_TAG_CATEGORIES
 from config.prompts import CONTENT_ANALYSIS_PROMPT
+from utils.gemini_cache import get_content_hash, get_from_cache, save_to_cache
 from utils.helpers import extract_tags_from_categories
 
 from .client import model
@@ -28,20 +31,25 @@ def analyze_content(content):
     if not content or len(content.strip()) == 0:
         return {"title": "", "summary": "", "tags": []}
 
+    # 尝试从缓存获取结果
+    content_to_analyze = content[:4000]  # 限制内容长度
+    content_hash = get_content_hash(content_to_analyze)
+    cached_result = get_from_cache(content_hash, "content_analysis")
+
+    if cached_result:
+        logger.info("使用缓存的内容分析结果")
+        return cached_result
+
     try:
         # 使用配置文件中的提示模板，注入预定义标签类别和内容
         prompt = CONTENT_ANALYSIS_PROMPT.format(
             categories=", ".join(PREDEFINED_TAG_CATEGORIES),
-            content=content[:4000],  # 限制内容长度
+            content=content_to_analyze,
         )
 
         response = model.generate_content(prompt)
 
         # 提取 JSON 部分
-        import json
-        import re
-
-        # 尝试找到 JSON 部分并解析
         json_match = re.search(r"\{.*\}", response.text, re.DOTALL)
         if json_match:
             try:
@@ -52,6 +60,8 @@ def analyze_content(content):
                 # 确保有标题字段
                 if "title" not in result:
                     result["title"] = ""
+                # 缓存结果
+                save_to_cache(content_hash, result, "content_analysis")
                 return result
             except json.JSONDecodeError:
                 pass
@@ -97,11 +107,16 @@ def analyze_content(content):
             if category_tags:
                 tags = category_tags
 
-        return {
+        result = {
             "title": title if title else "无标题",
             "summary": summary if summary else "无摘要",
             "tags": [tag for tag in tags if tag] if tags else [],
         }
+
+        # 缓存结果
+        save_to_cache(content_hash, result, "content_analysis")
+
+        return result
 
     except Exception as e:
         logger.error(f"分析内容时出错：{e}")

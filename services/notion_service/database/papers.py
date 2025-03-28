@@ -8,6 +8,8 @@ import requests
 
 from config import NOTION_PAPERS_DATABASE_ID
 
+from ..client import notion
+
 logger = logging.getLogger(__name__)
 
 # 导入 Gemini 服务

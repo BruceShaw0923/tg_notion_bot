@@ -55,7 +55,8 @@ def handle_todo_message(update: Update, content, created_at):
         page_id = add_to_todo_database(task_content, created_at, duration_hours)  # noqa: F841
 
         update.message.reply_text(
-            f"✅ 任务 {task_content} 已成功添加到待办事项列表！持续时间：{duration_hours:.1f}小时"
+            f"✅ 任务 {task_content} 已成功添加到待办事项列表！持续时间：{duration_hours:.1f}小时",
+            parse_mode=None,  # 禁用 Markdown 解析
         )
     except Exception as e:
         logger.error(f"添加待办事项时出错：{e}")
