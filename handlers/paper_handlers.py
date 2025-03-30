@@ -10,8 +10,8 @@ from telegram.ext import CallbackContext
 
 from services.zotero_service import (
     get_zotero_service,  # 导入服务实例获取函数
-    sync_papers_to_notion,  # 现在可以正确导入了
-    validate_collection_id,  # 现在可以正确导入了
+    sync_papers_to_notion,  # 导入同步论文到 Notion 的函数
+    validate_collection_id,  # 导入验证集合 ID 的函数
 )
 
 logger = logging.getLogger(__name__)
@@ -76,11 +76,11 @@ def sync_papers_by_count(update: Update, context: CallbackContext) -> None:
     )
 
     try:
-        # 使用统一函数，指定过滤类型为"count"
+        # 直接使用导入的同步函数
         result_message = sync_papers_to_notion(collection_id, "count", count)
         update.message.reply_text(result_message)
     except Exception as e:
-        logger.error(f"同步论文时出错：{e}")
+        logger.error(f"同步论文时出错：{e}", exc_info=True)
         update.message.reply_text(f"⚠️ 同步论文时出错：{str(e)}")
 
 
@@ -126,9 +126,9 @@ def sync_papers_by_days(update: Update, context: CallbackContext) -> None:
     )
 
     try:
-        # 使用统一函数，指定过滤类型为"days"
+        # 直接使用导入的同步函数
         result_message = sync_papers_to_notion(collection_id, "days", days)
         update.message.reply_text(result_message)
     except Exception as e:
-        logger.error(f"同步论文时出错：{e}")
+        logger.error(f"同步论文时出错：{e}", exc_info=True)
         update.message.reply_text(f"⚠️ 同步论文时出错：{str(e)}")

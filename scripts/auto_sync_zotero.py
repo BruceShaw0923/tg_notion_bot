@@ -34,7 +34,7 @@ def main():
         from services.gemini_service import analyze_pdf_content
         from services.notion_service import add_to_papers_database
         from services.telegram_service import enrich_analysis_with_metadata
-        from services.zotero_service import sync_recent_pdfs
+        from services.zotero_service1 import sync_recent_pdfs
 
         # 默认同步最近 2 天的 PDF
         days = 2

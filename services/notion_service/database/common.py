@@ -15,6 +15,212 @@ logger = logging.getLogger(__name__)
 notion = get_notion_client()
 
 
+def _split_text_into_chunks(text, max_length):
+    """
+    将文本分割成不超过最大长度的块
+
+    参数：
+    text (str): 要分割的文本
+    max_length (int): 每个块的最大长度
+
+    返回：
+    list: 文本块列表
+    """
+    if not text:
+        return []
+
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    start = 0
+
+    while start < len(text):
+        # 确定当前块的结束位置
+        end = start + max_length
+
+        # 如果没有到达文本末尾，尝试找一个合适的断点
+        if end < len(text):
+            # 尝试在段落、句子或单词结束处断开
+            # 优先级：段落 > 句子 > 单词 > 字符
+            paragraph_end = text.rfind("\n\n", start, end)
+            sentence_end = text.rfind(". ", start, end)
+            space_end = text.rfind(" ", start, end)
+
+            # 选择最合适的断点
+            if paragraph_end > start + max_length // 2:  # 至少有一半内容
+                end = paragraph_end + 2  # 包含段落结束符
+            elif sentence_end > start + max_length // 3:  # 至少有 1/3 内容
+                end = sentence_end + 2  # 包含句号和空格
+            elif space_end > start + max_length // 4:  # 至少有 1/4 内容
+                end = space_end + 1  # 包含空格
+            else:
+                # 如果找不到好的断点，就严格按照最大长度截断
+                end = start + max_length
+
+        # 添加当前块
+        chunks.append(text[start:end])
+        start = end
+
+    return chunks
+
+
+def process_blocks_content(blocks, max_length=2000):
+    """
+    处理块列表，确保每个块中的富文本内容不超过最大长度限制
+
+    参数：
+    blocks (list): Notion 块列表
+    max_length (int): 富文本内容的最大长度
+
+    返回：
+    list: 处理后的块列表
+    """
+    processed_blocks = []
+
+    for block in blocks:
+        block_type = block.get("type")
+        if not block_type:
+            processed_blocks.append(block)
+            continue
+
+        # 处理代码块
+        if block_type == "code" and "code" in block and "rich_text" in block["code"]:
+            if block["code"]["rich_text"] and "text" in block["code"]["rich_text"][0]:
+                content = block["code"]["rich_text"][0]["text"]["content"]
+
+                if len(content) > max_length:
+                    # 分割内容
+                    chunks = _split_text_into_chunks(content, max_length)
+                    language = block["code"]["language"]
+
+                    # 创建多个代码块
+                    for i, chunk in enumerate(chunks):
+                        code_block = {
+                            "object": "block",
+                            "type": "code",
+                            "code": {
+                                "rich_text": [
+                                    {"type": "text", "text": {"content": chunk}}
+                                ],
+                                "language": language,
+                            },
+                        }
+                        # 如果是多块中的一个，添加注释
+                        if len(chunks) > 1:
+                            prefix = (
+                                f"# 第 {i + 1}/{len(chunks)} 部分\n" if i > 0 else ""
+                            )
+                            code_block["code"]["rich_text"][0]["text"]["content"] = (
+                                prefix + chunk
+                            )
+
+                        processed_blocks.append(code_block)
+                else:
+                    processed_blocks.append(block)
+            else:
+                # 如果没有文本内容，直接添加块
+                processed_blocks.append(block)
+
+        # 处理其他包含 rich_text 的块类型
+        elif block_type in [
+            "paragraph",
+            "heading_1",
+            "heading_2",
+            "heading_3",
+            "bulleted_list_item",
+            "numbered_list_item",
+            "quote",
+            "callout",
+        ]:
+            if block_type in block and "rich_text" in block[block_type]:
+                if (
+                    block[block_type]["rich_text"]
+                    and "text" in block[block_type]["rich_text"][0]
+                ):
+                    content = block[block_type]["rich_text"][0]["text"]["content"]
+
+                    if len(content) > max_length:
+                        # 分割内容
+                        chunks = _split_text_into_chunks(content, max_length)
+
+                        # 添加第一个块（保持原块类型）
+                        first_block = block.copy()  # 创建原块的副本
+                        first_block[block_type]["rich_text"][0]["text"]["content"] = (
+                            chunks[0]
+                        )
+                        processed_blocks.append(first_block)
+
+                        # 其余内容作为段落添加
+                        for chunk in chunks[1:]:
+                            para_block = {
+                                "object": "block",
+                                "type": "paragraph",
+                                "paragraph": {
+                                    "rich_text": [
+                                        {"type": "text", "text": {"content": chunk}}
+                                    ]
+                                },
+                            }
+                            processed_blocks.append(para_block)
+                    else:
+                        processed_blocks.append(block)
+                else:
+                    # 处理没有文本内容的富文本块
+                    processed_blocks.append(block)
+            else:
+                processed_blocks.append(block)
+        # 处理可能嵌套的块
+        elif block_type == "toggle" and "toggle" in block:
+            # 处理 toggle 块的标题文本
+            if (
+                "rich_text" in block["toggle"]
+                and block["toggle"]["rich_text"]
+                and "text" in block["toggle"]["rich_text"][0]
+            ):
+                content = block["toggle"]["rich_text"][0]["text"]["content"]
+                if len(content) > max_length:
+                    chunks = _split_text_into_chunks(content, max_length)
+                    block["toggle"]["rich_text"][0]["text"]["content"] = chunks[0]
+
+                    # 额外的内容会在子块中处理
+
+            # 递归处理子块
+            if "children" in block["toggle"]:
+                block["toggle"]["children"] = process_blocks_content(
+                    block["toggle"]["children"], max_length
+                )
+
+            processed_blocks.append(block)
+        # 处理表格行和单元格
+        elif block_type == "table" and "table" in block:
+            # 表格本身不包含文本内容，但需要处理其行
+            if "children" in block:
+                block["children"] = process_blocks_content(
+                    block["children"], max_length
+                )
+            processed_blocks.append(block)
+        elif block_type == "table_row" and "table_row" in block:
+            # 处理表格行中的单元格
+            for cell in block["table_row"]["cells"]:
+                for rt in cell:
+                    if "text" in rt and "content" in rt["text"]:
+                        content = rt["text"]["content"]
+                        if len(content) > max_length:
+                            rt["text"]["content"] = content[:max_length]
+            processed_blocks.append(block)
+        # 处理列表块
+        elif block_type in ["bulleted_list", "numbered_list"] and "children" in block:
+            # 递归处理子块
+            block["children"] = process_blocks_content(block["children"], max_length)
+            processed_blocks.append(block)
+        else:
+            # 其他块类型直接添加
+            processed_blocks.append(block)
+
+    return processed_blocks
+
+
 def add_to_notion(content, summary, tags, url="", created_at=None):
     """
     将内容添加到 Notion 数据库
@@ -44,6 +250,9 @@ def add_to_notion(content, summary, tags, url="", created_at=None):
 
     # 将内容转换为 Notion 块格式
     content_blocks = convert_to_notion_blocks(content)
+
+    # 处理可能超过长度限制的块
+    content_blocks = process_blocks_content(content_blocks)
 
     # 截断摘要，确保不超过 2000 个字符
     truncated_summary = summary[:2000] if summary else ""
@@ -232,6 +441,9 @@ def create_weekly_report(title, content):
 
         # 将内容转换为 Notion block 格式，支持内链
         blocks = convert_to_notion_blocks(processed_content)
+
+        # 处理可能超过长度限制的块
+        blocks = process_blocks_content(blocks)
 
         # 创建页面
         blocks_count = len(blocks)

@@ -7,6 +7,7 @@
 import hashlib
 import json
 import logging
+import re
 from datetime import datetime
 
 from config.prompts import WEEKLY_SUMMARY_PROMPT
@@ -107,15 +108,68 @@ def generate_weekly_summary(entries):
             else:
                 logger.warning("周报生成成功，但未包含引用标记")
 
+            # 预处理响应文本，确保代码块不会过长
+            processed_text = preprocess_code_blocks(response.text)
+
             # 缓存生成的周报
-            save_to_cache(entries_hash, response.text, "weekly_summary")
-            return response.text
+            save_to_cache(entries_hash, processed_text, "weekly_summary")
+            return processed_text
         else:
             return "无法生成周报总结，请稍后再试。"
 
     except Exception as e:
         logger.error(f"生成周报总结时出错：{e}")
         return f"生成周报时遇到错误：{str(e)}"
+
+
+def preprocess_code_blocks(text, max_length=1900):
+    """
+    预处理文本中的代码块，确保它们不超过 Notion API 的长度限制
+
+    参数：
+    text (str): 包含可能的代码块的文本
+    max_length (int): 代码块的最大允许长度
+
+    返回：
+    str: 处理后的文本
+    """
+    # 查找所有代码块
+    code_block_pattern = r"```([a-zA-Z0-9]*)\n([\s\S]*?)\n```"
+
+    def process_code_block(match):
+        language = match.group(1)
+        content = match.group(2)
+
+        # 如果代码内容超过限制，分割它
+        if len(content) > max_length:
+            logger.warning(f"发现过长代码块 ({len(content)}字符)，进行分割")
+
+            # 分割代码内容
+            chunks = []
+            for i in range(0, len(content), max_length):
+                chunk = content[i : i + max_length]
+                chunks.append(chunk)
+
+            # 重新组装成多个代码块
+            result = []
+            for i, chunk in enumerate(chunks):
+                part_info = (
+                    f"# 第 {i + 1}/{len(chunks)} 部分" if len(chunks) > 1 else ""
+                )
+                if part_info and i > 0:  # 仅在非第一部分添加分段信息
+                    result.append(f"```{language}\n{part_info}\n{chunk}\n```")
+                else:
+                    result.append(f"```{language}\n{chunk}\n```")
+
+            return "\n\n".join(result)
+
+        # 否则返回原始代码块
+        return f"```{language}\n{content}\n```"
+
+    # 替换所有代码块
+    processed_text = re.sub(code_block_pattern, process_code_block, text)
+
+    return processed_text
 
 
 def get_content_preview(page_id, max_length=300):
@@ -138,10 +192,23 @@ def get_content_preview(page_id, max_length=300):
         return cached_preview
 
     try:
-        from services.notion_service import extract_notion_block_content, notion
+        # 避免循环导入，延迟导入
+        from services.notion_service.client import get_notion_client
+        from services.notion_service.database.common import extract_notion_block_content
+
+        # 获取 notion 客户端实例
+        notion = get_notion_client()
+        if not notion:
+            logger.error("无法获取 Notion 客户端")
+            return ""
 
         # 获取页面内容块
-        blocks = notion.blocks.children.list(block_id=page_id).get("results", [])
+        response = notion.blocks.children.list(block_id=page_id)
+        if not response:
+            logger.warning(f"获取页面内容时返回为空：{page_id}")
+            return ""
+
+        blocks = response.get("results", [])
 
         # 提取文本内容
         content = extract_notion_block_content(blocks)
@@ -157,6 +224,9 @@ def get_content_preview(page_id, max_length=300):
             save_to_cache(page_id, preview, "content_preview")
 
         return preview
+    except ImportError as e:
+        logger.error(f"导入所需模块时出错：{e}")
+        return ""
     except Exception as e:
         logger.warning(f"获取页面内容预览时出错：{e}")
         return ""
